@@ -42,6 +42,10 @@ function fakeClient(
   submitSteps: (args: SubmitStepsArgs) => Promise<SubmitStepsResult>,
 ): ConvexReactClient {
   return {
+    watchQuery: () => ({
+      localQueryResult: () => undefined,
+      onUpdate: () => () => {},
+    }),
     mutation: (_reference: unknown, args: unknown) =>
       submitSteps(args as SubmitStepsArgs),
   } as unknown as ConvexReactClient;
@@ -289,18 +293,15 @@ describe("_flushPendingSteps", () => {
   });
 });
 
-/**
- * Call the extension's onDestroy the way tiptap does, with a stand-in for the
- * editor: onDestroy only reads `editor.state`, and that state is a real one.
- * (A real Editor needs a DOM, which this test environment doesn't have.)
- */
+/** Run a subscribed editor through create and destroy with real collab state. */
 function destroy(extension: AnyExtension, state: EditorState) {
-  const onDestroy = (
-    extension.config as {
-      onDestroy?: (this: { editor: Editor }) => void;
-    }
-  ).onDestroy;
-  onDestroy!.call({ editor: { state } as Editor });
+  const config = extension.config as {
+    onCreate?: (this: { editor: Editor }) => void;
+    onDestroy?: (this: { editor: Editor }) => void;
+  };
+  const context = { editor: { state } as Editor };
+  config.onCreate!.call(context);
+  config.onDestroy!.call(context);
 }
 
 function extensionWith(

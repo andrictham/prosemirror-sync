@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { SyncApi } from "../client/index.js";
 import { type UseSyncOptions, useTiptapSync } from "../tiptap/index.js";
 import {
@@ -64,42 +64,74 @@ export function useBlockNoteSync<Editor = BlockNoteEditor>(
   | {
       editor: null;
       isLoading: false;
-      create: (content: JSONContent) => Promise<void>;
+      create?: (content: JSONContent) => Promise<void>;
     }
   | {
       editor: Editor;
       isLoading: false;
     } {
   const sync = useTiptapSync(syncApi, id, opts);
-  const editor = useMemo(() => {
-    if (sync.initialContent === null) return null;
-    const editor = BlockNoteEditor.create({
+  const conversion = useMemo(() => {
+    if (sync.initialContent === null) {
+      return { kind: "missing" as const };
+    }
+    const converter = BlockNoteEditor.create({
       ...opts?.editorOptions,
       _headless: true,
     });
     const blocks: Block<any, any, any>[] = [];
-
-    // Convert the prosemirror document to BlockNote blocks.
-    // inspired by https://github.com/TypeCellOS/BlockNote/blob/main/packages/server-util/src/context/ServerBlockNoteEditor.ts#L42
-    const pmNode = editor.pmSchema.nodeFromJSON(sync.initialContent);
-    if (pmNode.firstChild) {
-      pmNode.firstChild.descendants((node) => {
-        blocks.push(nodeToBlock(node, editor.pmSchema));
-        return false;
-      });
+    try {
+      // Convert the prosemirror document to BlockNote blocks.
+      // inspired by https://github.com/TypeCellOS/BlockNote/blob/main/packages/server-util/src/context/ServerBlockNoteEditor.ts#L42
+      const pmNode = opts?.decodeInitialContent
+        ? opts.decodeInitialContent(
+            converter.pmSchema,
+            sync.initialContent as JSONContent,
+          )
+        : converter.pmSchema.nodeFromJSON(sync.initialContent);
+      if (pmNode.firstChild) {
+        pmNode.firstChild.descendants((node) => {
+          blocks.push(nodeToBlock(node, pmNode));
+          return false;
+        });
+      }
+      return {
+        kind: "ready" as const,
+        editor: BlockNoteEditor.create({
+          ...opts?.editorOptions,
+          _tiptapOptions: {
+            ...opts?.editorOptions?._tiptapOptions,
+            extensions: [
+              ...(opts?.editorOptions?._tiptapOptions?.extensions ?? []),
+              sync.extension,
+            ],
+          },
+          initialContent: blocks.length > 0 ? blocks : undefined,
+        }),
+      };
+    } catch (error) {
+      return {
+        kind: "failed" as const,
+        error:
+          error instanceof Error
+            ? error
+            : new Error("Editor snapshot conversion failed"),
+      };
+    } finally {
+      converter._tiptapEditor.destroy();
     }
-    return BlockNoteEditor.create({
-      ...opts?.editorOptions,
-      _tiptapOptions: {
-        ...opts?.editorOptions?._tiptapOptions,
-        extensions: [
-          ...(opts?.editorOptions?._tiptapOptions?.extensions ?? []),
-          sync.extension,
-        ],
-      },
-      initialContent: blocks.length > 0 ? blocks : undefined,
-    });
   }, [sync.initialContent]);
+  const reportedConversionFailure = useRef<Error | null>(null);
+  useEffect(() => {
+    if (conversion.kind !== "failed") {
+      return;
+    }
+    if (reportedConversionFailure.current === conversion.error) {
+      return;
+    }
+    reportedConversionFailure.current = conversion.error;
+    opts?.onSyncError?.(conversion.error);
+  }, [conversion, opts?.onSyncError]);
 
   if (sync.isLoading) {
     return {
@@ -117,7 +149,13 @@ export function useBlockNoteSync<Editor = BlockNoteEditor>(
       create: sync.create,
     } as const;
   }
-  if (!editor) {
+  if (conversion.kind === "failed") {
+    return {
+      editor: null,
+      isLoading: false,
+    } as const;
+  }
+  if (conversion.kind === "missing") {
     return {
       editor: null,
       isLoading: false,
@@ -125,7 +163,7 @@ export function useBlockNoteSync<Editor = BlockNoteEditor>(
     } as const;
   }
   return {
-    editor: editor as unknown as Editor,
+    editor: conversion.editor as unknown as Editor,
     isLoading: false,
   } as const;
 }

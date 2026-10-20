@@ -12,11 +12,22 @@ import {
   Extension,
   type JSONContent,
 } from "@tiptap/core";
+import type { Node as ProseMirrorNode, Schema } from "@tiptap/pm/model";
 import type { EditorState } from "@tiptap/pm/state";
 import * as collab from "prosemirror-collab";
 import { Step } from "@tiptap/pm/transform";
 import { useCallback, useMemo, useRef } from "react";
 import type { SyncApi } from "../client/index.js";
+import { isTerminalSchemaError } from "./sync-lifecycle.js";
+import {
+  createSyncObserver,
+  type SyncObservation,
+} from "./sync-observations.js";
+export type {
+  SyncSubmission,
+  SyncReceipt,
+  SyncObservation,
+} from "./sync-observations.js";
 
 // How many steps we will attempt to sync in one request.
 const MAX_STEPS_SYNC = 1000;
@@ -47,6 +58,37 @@ export type UseSyncOptions = {
    * @default true
    */
   warnOnUnsyncedClose?: boolean;
+  /**
+   * Decode the initial snapshot against the live schema before a writable
+   * editor is constructed. Throw to refuse the document without installing
+   * the collaboration extension on a live editor.
+   */
+  decodeInitialContent?: (
+    schema: Schema,
+    content: JSONContent,
+  ) => ProseMirrorNode;
+  /**
+   * Decode a persisted collaboration step received as JSON text. Throw to
+   * refuse applying it and enter the provider's terminal schema-failure state.
+   */
+  decodeCollaborationStep?: (schema: Schema, serializedStep: string) => Step;
+  /**
+   * Decode a restored local step already parsed as JSON. Throw to refuse
+   * replay and enter the provider's terminal schema-failure state.
+   */
+  decodeRestoredStep?: (schema: Schema, restoredStep: object) => Step;
+  /**
+   * Observes the sync protocol without taking part in it. A `submit` event
+   * fires synchronously immediately before each `submitSteps` attempt,
+   * including retries of the same batch, so the observer sees the editor state
+   * at submission time. A `receive` event fires after collab applies exactly
+   * the confirmed steps, excluding any appended normalization, and only while
+   * the editor's subscription is live and sync has not failed terminally.
+   * Observer exceptions are isolated and never interrupt sync. Submissions
+   * made by the headless flush after an editor is destroyed
+   * (`_flushPendingSteps`) are not observed.
+   */
+  onSyncObservation?: (event: SyncObservation) => void;
 };
 
 export function useTiptapSync(
@@ -155,11 +197,17 @@ export function syncExtension(
   };
   let snapshotTimer: NodeJS.Timeout | undefined;
   const trySubmitSnapshot = (version: number, content: string) => {
+    if (schemaFatal) {
+      return;
+    }
     if (snapshotTimer) {
       clearTimeout(snapshotTimer);
     }
     snapshotTimer = setTimeout(() => {
       snapshotTimer = undefined;
+      if (schemaFatal) {
+        return;
+      }
       // Snapshots are an optimization over replaying steps, and the next one
       // supersedes this one, so a failure here costs us nothing.
       void convex
@@ -168,6 +216,7 @@ export function syncExtension(
     }, opts?.snapshotDebounceMs ?? SNAPSHOT_DEBOUNCE_MS);
   };
 
+  let schemaFatal = false;
   let active: boolean = false;
   let pending:
     | { resolve: () => void; reject: () => void; promise: Promise<void> }
@@ -175,6 +224,39 @@ export function syncExtension(
   // Every editor that queued behind the active sync, so the retry in
   // `finally` serves all of them.
   const pendingEditors = new Set<Editor>();
+
+  function resolvePendingWithoutRetry() {
+    pendingEditors.clear();
+    if (!pending) {
+      return;
+    }
+    const { resolve } = pending;
+    pending = undefined;
+    resolve();
+  }
+
+  function enterTerminalSchemaFailure(error: Error) {
+    schemaFatal = true;
+    if (snapshotTimer) {
+      clearTimeout(snapshotTimer);
+      snapshotTimer = undefined;
+    }
+    for (const subscribed of [...subscriptions.keys()]) {
+      releaseEditorResources(subscribed);
+    }
+    resolvePendingWithoutRetry();
+    if (opts?.onSyncError) {
+      opts.onSyncError(error);
+      return;
+    }
+    throw error;
+  }
+
+  function readPersistedStep(schema: Schema, serializedStep: string): Step {
+    return opts?.decodeCollaborationStep
+      ? opts.decodeCollaborationStep(schema, serializedStep)
+      : Step.fromJSON(schema, JSON.parse(serializedStep));
+  }
 
   // Editor-keyed, not shared closure variables: StrictMode's double-mount
   // briefly gives two live editors the same extension instance, and each must
@@ -187,9 +269,69 @@ export function syncExtension(
     Editor,
     (e: BeforeUnloadEvent) => void
   >();
+  const restoredEditors = new WeakSet<Editor>();
+
+  const observe = createSyncObserver(
+    (event) => opts?.onSyncObservation?.(event),
+    log,
+  );
+
+  function observeSubmission(
+    editor: Editor,
+    version: number,
+    clientId: string | number,
+    steps: readonly string[],
+    truncated: boolean,
+  ) {
+    observe(
+      Object.freeze({
+        kind: "submit",
+        editor,
+        version,
+        clientId,
+        steps: Object.freeze([...steps]),
+        truncated,
+      }),
+    );
+  }
+
+  function applyConfirmedSteps(
+    editor: Editor,
+    steps: Step[],
+    clientIds: (string | number)[],
+  ) {
+    const fromVersion = collab.getVersion(editor.state);
+    receiveSteps(editor, steps, clientIds);
+    if (schemaFatal || editor.isDestroyed || !subscriptions.has(editor)) return;
+    observe(
+      Object.freeze({
+        kind: "receive",
+        editor,
+        fromVersion,
+        toVersion: fromVersion + steps.length,
+        steps: Object.freeze([...steps]),
+        clientIds: Object.freeze([...clientIds]),
+      }),
+    );
+  }
+
+  function releaseEditorResources(editor: Editor) {
+    subscriptions.get(editor)?.unsubscribe();
+    subscriptions.delete(editor);
+    pendingEditors.delete(editor);
+    const beforeUnloadHandler = beforeUnloadHandlers.get(editor);
+    if (beforeUnloadHandler) {
+      window.removeEventListener?.("beforeunload", beforeUnloadHandler);
+      beforeUnloadHandlers.delete(editor);
+    }
+  }
 
   async function trySync(editor: Editor) {
-    const serverVersion = subscriptions.get(editor)?.watch.localQueryResult();
+    if (schemaFatal) {
+      return;
+    }
+    const subscription = subscriptions.get(editor);
+    const serverVersion = subscription?.watch.localQueryResult();
     if (serverVersion === undefined) {
       return;
     }
@@ -213,6 +355,9 @@ export function syncExtension(
     active = true;
 
     try {
+      if (schemaFatal) {
+        return;
+      }
       if (
         await doSync(
           editor,
@@ -222,8 +367,15 @@ export function syncExtension(
           serverVersion,
           initialState,
           opts?.debug,
+          readPersistedStep,
+          () => schemaFatal || subscriptions.get(editor) !== subscription,
+          observeSubmission,
+          applyConfirmedSteps,
         )
       ) {
+        if (schemaFatal) {
+          return;
+        }
         const version = collab.getVersion(editor.state);
         const content = JSON.stringify(editor.state.doc.toJSON());
         if (collab.sendableSteps(editor.state)) {
@@ -232,6 +384,14 @@ export function syncExtension(
         trySubmitSnapshot(version, content);
       }
     } catch (error) {
+      if (isTerminalSchemaError(error)) {
+        enterTerminalSchemaFailure(
+          error instanceof Error
+            ? error
+            : new Error("Editor schema rejected structured content"),
+        );
+        return;
+      }
       if (opts?.onSyncError) {
         opts.onSyncError(error as Error);
       } else {
@@ -239,6 +399,10 @@ export function syncExtension(
       }
     } finally {
       active = false;
+      if (schemaFatal) {
+        resolvePendingWithoutRetry();
+        return;
+      }
       if (pending) {
         const { resolve, reject } = pending;
         pending = undefined;
@@ -263,14 +427,8 @@ export function syncExtension(
     onDestroy() {
       log("destroying");
       const editor = this.editor;
-      subscriptions.get(editor)?.unsubscribe();
-      subscriptions.delete(editor);
-      pendingEditors.delete(editor);
-      const beforeUnloadHandler = beforeUnloadHandlers.get(editor);
-      if (beforeUnloadHandler) {
-        window.removeEventListener?.("beforeunload", beforeUnloadHandler);
-        beforeUnloadHandlers.delete(editor);
-      }
+      const wasActive = subscriptions.has(editor);
+      releaseEditorResources(editor);
       // A snapshot may belong to an editor that's still live, so only cancel
       // it once the last one is gone.
       if (subscriptions.size === 0 && snapshotTimer) {
@@ -282,7 +440,7 @@ export function syncExtension(
       // in-app unmount. 'destroy' fires before the view is torn down and the
       // state is immutable, so it's safe to capture and use afterwards.
       const state = editor.state;
-      if (collab.sendableSteps(state)) {
+      if (wasActive && !schemaFatal && collab.sendableSteps(state)) {
         void _flushPendingSteps(convex, syncApi, id, state, opts?.debug).then(
           (outcome) => {
             if (outcome === "gave-up") {
@@ -298,16 +456,37 @@ export function syncExtension(
       }
     },
     onCreate() {
-      if (initialState.restoredSteps?.length) {
+      const editor = this.editor;
+      releaseEditorResources(editor);
+      if (schemaFatal) {
+        return;
+      }
+      if (initialState.restoredSteps?.length && !restoredEditors.has(editor)) {
+        restoredEditors.add(editor);
         // TODO: verify that restoring local steps works
         log("Restoring local steps", initialState.restoredSteps);
-        const tr = this.editor.state.tr;
-        for (const step of initialState.restoredSteps) {
-          tr.step(Step.fromJSON(this.editor.schema, step));
+        try {
+          const tr = editor.state.tr;
+          for (const step of initialState.restoredSteps) {
+            tr.step(
+              opts?.decodeRestoredStep
+                ? opts.decodeRestoredStep(editor.schema, step)
+                : Step.fromJSON(editor.schema, step),
+            );
+          }
+          editor.view.dispatch(tr);
+        } catch (error) {
+          if (isTerminalSchemaError(error)) {
+            enterTerminalSchemaFailure(
+              error instanceof Error
+                ? error
+                : new Error("Editor schema rejected structured content"),
+            );
+            return;
+          }
+          throw error;
         }
-        this.editor.view.dispatch(tr);
       }
-      const editor = this.editor;
       const watch = convex.watchQuery(syncApi.latestVersion, { id });
       const unsubscribe = watch.onUpdate(() => {
         void trySync(editor);
@@ -332,6 +511,9 @@ export function syncExtension(
       }
     },
     onUpdate() {
+      if (schemaFatal) {
+        return;
+      }
       void trySync(this.editor);
     },
     addProseMirrorPlugins() {
@@ -354,7 +536,21 @@ async function doSync(
   id: string,
   serverVersion: number | null,
   initialState: InitialState,
-  debug?: boolean,
+  debug: boolean | undefined,
+  readPersistedStep: (schema: Schema, serializedStep: string) => Step,
+  isStopped: () => boolean,
+  observeSubmission: (
+    editor: Editor,
+    version: number,
+    clientId: string | number,
+    steps: readonly string[],
+    truncated: boolean,
+  ) => void,
+  applyConfirmedSteps: (
+    editor: Editor,
+    steps: Step[],
+    clientIds: (string | number)[],
+  ) => void,
 ) {
   const log: typeof console.log = debug ? console.debug : () => {};
   if (serverVersion === null) {
@@ -374,6 +570,7 @@ async function doSync(
       throw new Error("Syncing a document that doesn't exist server-side");
     }
   }
+  if (isStopped() || editor.isDestroyed) return false;
   const version = collab.getVersion(editor.state);
   if (serverVersion !== null && serverVersion > version) {
     log("Updating to server version", {
@@ -385,18 +582,18 @@ async function doSync(
       id,
       version,
     });
-    if (editor.isDestroyed) return false;
+    if (isStopped() || editor.isDestroyed) return false;
     // Apply only the steps we don't already have: the local version can
     // advance during the await. Re-applying a prefix would push our version
     // past the server's, and the next submitSteps would then write a delta
     // with a version gap, which no client can read past.
     const skip = collab.getVersion(editor.state) - version;
     if (skip >= 0 && skip < steps.steps.length) {
-      receiveSteps(
+      applyConfirmedSteps(
         editor,
         steps.steps
           .slice(skip)
-          .map((step) => Step.fromJSON(editor.schema, JSON.parse(step))),
+          .map((step) => readPersistedStep(editor.schema, step)),
         steps.clientIds.slice(skip),
       );
     }
@@ -408,7 +605,7 @@ async function doSync(
     // onDestroy owns the remaining steps from here. Reporting no changes is
     // required — the state still has sendable steps, which trySync treats as
     // an invariant violation on a successful sync.
-    if (editor.isDestroyed) return false;
+    if (isStopped() || editor.isDestroyed) return false;
     const sendable = collab.sendableSteps(editor.state);
     if (!sendable) {
       break;
@@ -416,6 +613,13 @@ async function doSync(
     const steps = sendable.steps
       .slice(0, MAX_STEPS_SYNC)
       .map((step) => JSON.stringify(step.toJSON()));
+    observeSubmission(
+      editor,
+      sendable.version,
+      sendable.clientID,
+      steps,
+      sendable.steps.length > steps.length,
+    );
     log("Sending steps", { steps, version: sendable.version });
     const result = await convex.mutation(syncApi.submitSteps, {
       id,
@@ -423,12 +627,13 @@ async function doSync(
       version: sendable.version,
       clientId: sendable.clientID,
     });
+    if (isStopped() || editor.isDestroyed) return false;
     if (result.status === "synced") {
       anyChanges = true;
       // We replay the steps locally to avoid refetching them.
-      receiveSteps(
+      applyConfirmedSteps(
         editor,
-        steps.map((step) => Step.fromJSON(editor.schema, JSON.parse(step))),
+        steps.map((step) => readPersistedStep(editor.schema, step)),
         steps.map(() => sendable.clientID),
       );
       log("Synced", {
@@ -439,11 +644,9 @@ async function doSync(
       continue;
     }
     if (result.status === "needs-rebase") {
-      receiveSteps(
+      applyConfirmedSteps(
         editor,
-        result.steps.map((step) =>
-          Step.fromJSON(editor.schema, JSON.parse(step)),
-        ),
+        result.steps.map((step) => readPersistedStep(editor.schema, step)),
         result.clientIds,
       );
       log("Rebased", {
