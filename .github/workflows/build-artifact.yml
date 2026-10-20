@@ -1,0 +1,35 @@
+name: Build pinned artifact
+on:
+  push:
+    branches:
+      - sync-seams-0.2.6
+      - artifacts/**
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - run: npm install --global npm@11.19.0
+      - name: Verify pinned toolchain
+        run: |
+          test "$(node --version)" = "v24.20.0"
+          test "$(npm --version)" = "11.19.0"
+      - run: npm ci --ignore-scripts
+      - run: npm run build:artifact
+      - name: Verify committed artifacts
+        if: startsWith(github.ref, 'refs/heads/artifacts/')
+        run: git diff --exit-code -- dist
+      - name: Publish immutable artifact branch
+        if: github.ref == 'refs/heads/sync-seams-0.2.6'
+        run: |
+          git switch -c "artifacts/${GITHUB_SHA}"
+          git add -f -- dist
+          git -c user.name='Package build' -c user.email='package-build@users.noreply.github.com' commit -m 'chore(build): Generate pinned package artifacts' -m "Build source ${GITHUB_SHA} with the locked Node, npm and TypeScript toolchain after upstream tests and packed exports pass."
+          git push origin "HEAD:refs/heads/artifacts/${GITHUB_SHA}"

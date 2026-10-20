@@ -1,0 +1,30 @@
+{
+  "upstreamRepository": "https://github.com/get-convex/prosemirror-sync",
+  "upstreamVersion": "0.2.6",
+  "upstreamCommit": "4d7b011df23aff3f1351319e9348f9cd46b2ae70",
+  "toolchain": {
+    "node": "24.20.0",
+    "npm": "11.19.0",
+    "typescript": "5.9.3"
+  },
+  "contracts": {
+    "src/tiptap/sync-lifecycle.ts": ["terminal schema classification"],
+    "src/tiptap/index.ts": [
+      "schema decoders",
+      "terminal cancellation",
+      "per-editor resource release",
+      "restore once",
+      "stale subscription guards",
+      "live submission and applied receipt observation"
+    ],
+    "src/tiptap/sync-observations.ts": [
+      "immutable submit/receive types",
+      "observer exception isolation"
+    ],
+    "src/blocknote/index.ts": [
+      "containing document conversion",
+      "converter cleanup",
+      "fail-closed conversion"
+    ]
+  }
+}
