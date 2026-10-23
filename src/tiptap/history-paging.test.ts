@@ -438,3 +438,99 @@ test("destroyed flush preserves every foreign step and local edit across 21 real
   expect(rebuilt.doc.textContent).toBe(`${foreignText}mine`);
   expect(version).toBe(2_102);
 });
+
+test.each([
+  { foreignRounds: 101, localSteps: 1, outcome: "gave-up", accepted: 0 },
+  { foreignRounds: 99, localSteps: 1_001, outcome: "gave-up", accepted: 1_000 },
+  { foreignRounds: 98, localSteps: 1_001, outcome: "flushed", accepted: 1_001 },
+])(
+  "destroyed flush stops at 100 total submissions with $foreignRounds competing edits and $localSteps local steps",
+  async ({ foreignRounds, localSteps, outcome, accepted }) => {
+    const t = convexTest({
+      schema: componentSchema,
+      modules,
+      transactionLimits: true,
+    });
+    const id = "competing-destroyed-flush";
+    const initial = stateAt(1);
+    let state = initial;
+    for (let index = 0; index < localSteps; index++) {
+      state = state.apply(state.tr.insertText("m", 1));
+    }
+    await t.mutation(api.lib.submitSnapshot, {
+      id,
+      version: 1,
+      content: JSON.stringify(initial.doc.toJSON()),
+    });
+    const requestedVersions: number[] = [];
+    const responses: string[] = [];
+    let serverVersion = 1;
+    let foreignCalls = 0;
+    const convex = {
+      mutation: async (
+        _reference: unknown,
+        args: FunctionArgs<typeof api.lib.submitSteps>,
+      ) => {
+        requestedVersions.push(args.version);
+        // A finite foreign writer makes each local request stale. Every
+        // rebase still advances through nonempty, production-owned history.
+        if (
+          foreignCalls < foreignRounds &&
+          (localSteps === 1 || requestedVersions.length > 1)
+        ) {
+          const foreign = await t.mutation(api.lib.submitSteps, {
+            id,
+            version: serverVersion,
+            clientId: "other",
+            steps: [insert("x", 1)],
+          });
+          expect(foreign.status).toBe("synced");
+          foreignCalls++;
+          serverVersion++;
+        }
+        const result = await t.mutation(api.lib.submitSteps, args);
+        if (result.status === "synced") serverVersion += args.steps.length;
+        if (result.status === "needs-rebase") {
+          expect(result.steps).toHaveLength(1);
+          expect(result.clientIds).toEqual(["other"]);
+        }
+        responses.push(result.status);
+        return result;
+      },
+    } as unknown as ConvexReactClient;
+
+    expect(await _flushPendingSteps(convex, syncApi, id, state)).toBe(outcome);
+    expect(requestedVersions).toHaveLength(100);
+    expect(responses.filter((status) => status === "synced")).toHaveLength(
+      Math.ceil(accepted / 1_000),
+    );
+
+    let rebuilt = initial;
+    let version = 1;
+    const clientIds: (string | number)[] = [];
+    const foreignAccepted = Math.min(
+      foreignRounds,
+      localSteps === 1 ? 100 : 99,
+    );
+    while (version < 1 + foreignAccepted + accepted) {
+      const page = await t.query(api.lib.getSteps, { id, version });
+      expect(page.steps.length).toBeGreaterThan(0);
+      for (const serialized of page.steps) {
+        rebuilt = rebuilt.apply(
+          rebuilt.tr.step(Step.fromJSON(schema, JSON.parse(serialized))),
+        );
+      }
+      clientIds.push(...page.clientIds);
+      version = page.version;
+    }
+    expect(rebuilt.doc.textContent).toBe(
+      `${"x".repeat(foreignAccepted)}${"m".repeat(accepted)}`,
+    );
+    expect(clientIds.filter((clientId) => clientId === "other")).toHaveLength(
+      foreignAccepted,
+    );
+    expect(clientIds.filter((clientId) => clientId === "me")).toHaveLength(
+      accepted,
+    );
+  },
+);

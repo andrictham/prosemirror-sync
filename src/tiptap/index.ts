@@ -576,7 +576,6 @@ async function doSync(
     }
   }
   if (isStopped() || editor.isDestroyed) return false;
-  const version = collab.getVersion(editor.state);
   while (
     serverVersion !== null &&
     serverVersion > collab.getVersion(editor.state)
@@ -652,7 +651,7 @@ async function doSync(
       );
       log("Synced", {
         steps,
-        version,
+        version: sendable.version,
         newVersion: collab.getVersion(editor.state),
       });
       continue;
@@ -691,6 +690,10 @@ function receiveSteps(
 // The flush has no editor and no user behind it, and the page may be unloading,
 // so it cannot keep retrying a stalled server indefinitely.
 const MAX_FLUSH_REBASES = 20;
+// Bound total post-destroy work, including advancing pages and successful
+// batches. Remaining local edits may be lost when this budget runs out;
+// onDestroy reports that outcome through the existing onSyncError handler.
+const MAX_FLUSH_ROUNDS = 100;
 
 /**
  * Submit a destroyed editor's unconfirmed local steps: the doSync send loop,
@@ -699,9 +702,9 @@ const MAX_FLUSH_REBASES = 20;
  * would live — own-clientID steps confirm (the in-flight submit at destroy may
  * have landed them), foreign steps rebase ours.
  *
- * Best-effort: resolves "gave-up" if the submit fails, and rejects if a step
- * won't apply to the captured state. Either way the steps are lost, and
- * `onDestroy` reports both through `onSyncError`.
+ * Best-effort: resolves "gave-up" if the submit fails or a retry budget runs
+ * out, and rejects if a step won't apply to the captured state. Any remaining
+ * local steps are lost, and `onDestroy` reports both through `onSyncError`.
  *
  * @internal Exported for tests, hence the underscore. Not a supported API.
  */
@@ -714,9 +717,11 @@ export async function _flushPendingSteps(
 ): Promise<"flushed" | "gave-up"> {
   const log: typeof console.log = debug ? console.debug : () => {};
   let rebases = 0;
-  while (rebases < MAX_FLUSH_REBASES) {
+  let rounds = 0;
+  while (rebases < MAX_FLUSH_REBASES && rounds < MAX_FLUSH_ROUNDS) {
     const sendable = collab.sendableSteps(state);
     if (!sendable) return "flushed";
+    rounds++;
     // Confirm only what is actually sent this round — the remainder past
     // MAX_STEPS_SYNC drains on the next iteration.
     const toSend = sendable.steps.slice(0, MAX_STEPS_SYNC);
@@ -755,7 +760,7 @@ export async function _flushPendingSteps(
     }
     rebases = collab.getVersion(state) > sendable.version ? 0 : rebases + 1;
   }
-  return "gave-up";
+  return collab.sendableSteps(state) ? "gave-up" : "flushed";
 }
 
 type InitialState = {

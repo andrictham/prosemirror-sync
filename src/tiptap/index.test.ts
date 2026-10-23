@@ -6,7 +6,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import type { ConvexReactClient } from "convex/react";
 import type { AnyExtension, Editor } from "@tiptap/core";
 import { Schema } from "@tiptap/pm/model";
-import { EditorState } from "@tiptap/pm/state";
+import { EditorState, type Transaction } from "@tiptap/pm/state";
 import * as collab from "prosemirror-collab";
 import componentSchema from "../component/schema.js";
 import { api } from "../component/_generated/api.js";
@@ -316,6 +316,106 @@ function extensionWith(
     { onSyncError },
   );
 }
+
+test("Synced debug logs report each submitted version after catch-up and rebase", async () => {
+  const t = convexTest(componentSchema, modules);
+  const id = "debug-sync-versions";
+  await seedSnapshot(t, id);
+  const foreign = typeText(stateAt(1, "other"), "a");
+  await t.mutation(api.lib.submitSteps, {
+    id,
+    version: 1,
+    clientId: "other",
+    steps: stepsJSON(foreign),
+  });
+  let state = stateAt(1, "me");
+  for (let index = 0; index < 1_001; index++) {
+    state = typeText(state, "m");
+  }
+  let competingEdit = true;
+  const statuses: string[] = [];
+  const convex = {
+    watchQuery: () => ({
+      localQueryResult: () => 2,
+      onUpdate: () => () => {},
+    }),
+    query: (_reference: unknown, args: { id: string; version: number }) =>
+      t.query(api.lib.getSteps, args),
+    mutation: async (_reference: unknown, args: SubmitStepsArgs) => {
+      if (competingEdit) {
+        competingEdit = false;
+        const nextForeign = typeText(
+          EditorState.create({
+            doc: foreign.doc,
+            plugins: [collab.collab({ version: 2, clientID: "other" })],
+          }),
+          "b",
+        );
+        await t.mutation(api.lib.submitSteps, {
+          id,
+          version: 2,
+          clientId: "other",
+          steps: stepsJSON(nextForeign),
+        });
+      }
+      const result = await t.mutation(api.lib.submitSteps, args);
+      statuses.push(result.status);
+      return result;
+    },
+  } as unknown as ConvexReactClient;
+  const editor = {
+    get state() {
+      return state;
+    },
+    schema,
+    isDestroyed: false,
+    view: {
+      dispatch(transaction: Transaction) {
+        state = state.apply(transaction);
+      },
+    },
+  } as unknown as Editor;
+  const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+  const errors: Error[] = [];
+  const extension = syncExtension(
+    convex,
+    id,
+    syncApi,
+    { initialVersion: 1, initialContent: state.doc.toJSON() },
+    {
+      debug: true,
+      warnOnUnsyncedClose: false,
+      snapshotDebounceMs: 60_000,
+      onSyncError: (error) => errors.push(error),
+    },
+  );
+  const config = extension.config as unknown as {
+    onCreate: (this: { editor: Editor }) => void;
+    onDestroy: (this: { editor: Editor }) => void;
+  };
+  try {
+    config.onCreate.call({ editor });
+    await vi.waitFor(() => expect(collab.getVersion(state)).toBe(1_004));
+    expect(collab.sendableSteps(state)).toBeNull();
+    expect(state.doc.textContent).toBe(`ba${"m".repeat(1_001)}`);
+    expect(statuses).toEqual(["needs-rebase", "synced", "synced"]);
+    expect(
+      debug.mock.calls
+        .filter(([message]) => message === "Synced")
+        .map(([, event]) => ({
+          version: event.version,
+          newVersion: event.newVersion,
+        })),
+    ).toEqual([
+      { version: 3, newVersion: 1_003 },
+      { version: 1_003, newVersion: 1_004 },
+    ]);
+    expect(errors).toEqual([]);
+  } finally {
+    config.onDestroy.call({ editor });
+    debug.mockRestore();
+  }
+});
 
 describe("onDestroy error reporting", () => {
   test("reports a flush that gave up", async () => {
