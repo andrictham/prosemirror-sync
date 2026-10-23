@@ -9,7 +9,11 @@ export function BlockNoteExample(props: { id: string }) {
   const sync = useBlockNoteSync<BlockNoteEditor>(api.example, props.id, {
     debug: true,
   });
-  if (!sync.isLoading && sync.editor === null) {
+  if (
+    !sync.isLoading &&
+    sync.editor === null &&
+    typeof sync.create === "function"
+  ) {
     sync.create({ type: "doc", content: [] });
   }
   return sync.editor ? (
