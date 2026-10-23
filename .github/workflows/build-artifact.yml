@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - sync-seams-0.2.6
+      - history-paging
       - artifacts/**
 permissions:
   contents: write
@@ -27,7 +28,9 @@ jobs:
         if: startsWith(github.ref, 'refs/heads/artifacts/')
         run: git diff --exit-code -- dist
       - name: Publish immutable artifact branch
-        if: github.ref == 'refs/heads/sync-seams-0.2.6'
+        if:
+          github.ref == 'refs/heads/sync-seams-0.2.6' || github.ref ==
+          'refs/heads/history-paging'
         run: |
           git switch -c "artifacts/${GITHUB_SHA}"
           git add -f -- dist

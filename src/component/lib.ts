@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { getConvexSize, v } from "convex/values";
 import {
   mutation,
   type MutationCtx,
@@ -9,7 +9,16 @@ import type { Doc } from "./_generated/dataModel";
 import { vClientId } from "./schema";
 import { api } from "./_generated/api";
 
-const MAX_DELTA_FETCH = 100;
+// Each returned array has its own 8,192-element limit. Keep 2,048 elements of
+// headroom while allowing the app's whole 5,000-step submissions to fit.
+const MAX_HISTORY_PAGE_STEPS = 6_144;
+// Count full stored rows, not just returned steps. The 6 MiB target plus one
+// maximum Convex document (1 MiB) of lookahead and a 6 MiB response stays below
+// 16 MiB, leaving room for callers' other work. Expanded clientIds count toward
+// the response target too, since each stored ID is repeated for every step.
+const MAX_HISTORY_PAGE_BYTES = 6 * 1024 * 1024;
+// Independently bound scans, including histories containing empty delta rows.
+const MAX_HISTORY_PAGE_RECORDS = 100;
 const MAX_SNAPSHOT_FETCH = 10;
 
 export const submitSnapshot = mutation({
@@ -89,14 +98,8 @@ export const submitSteps = mutation({
     v.object({ status: v.literal("synced") }),
   ),
   handler: async (ctx, args) => {
-    const changes = await ctx.db
-      .query("deltas")
-      .withIndex("id_version", (q) =>
-        q.eq("id", args.id).gt("version", args.version),
-      )
-      .take(MAX_DELTA_FETCH);
-    if (changes.length > 0) {
-      const [steps, clientIds] = stepsAndClientIds(changes);
+    const [steps, clientIds] = await fetchSteps(ctx, args.id, args.version);
+    if (steps.length > 0) {
       return { status: "needs-rebase", clientIds, steps } as const;
     }
     await ctx.db.insert("deltas", {
@@ -152,21 +155,60 @@ export const getSnapshot = query({
   },
 });
 
-async function fetchSteps(
+/**
+ * Read a whole-record prefix. The caller's admission policy must bound each
+ * individual record to 6,144 steps and 6 MiB of expanded response data,
+ * including repeated client IDs. A first record is always included so paging
+ * makes progress; the app's 5,000-step/900,000-byte policy bounds step data,
+ * but callers must also keep client IDs small enough for the expanded result.
+ * Already-stored oversized singleton records cannot satisfy both this bound
+ * and whole-record progress without a separate protocol or admission change.
+ */
+async function readHistoryPage(
   ctx: QueryCtx,
   id: string,
   afterVersion: number,
-  targetVersion?: number,
 ) {
-  const deltas = await ctx.db
+  const deltas: Doc<"deltas">[] = [];
+  let steps = 0;
+  let bytesRead = 0;
+  // Reserve the response's object/array fields and the version or status.
+  let responseBytes = 128;
+  const history = ctx.db
     .query("deltas")
-    .withIndex("id_version", (q) =>
-      q
-        .eq("id", id)
-        .gt("version", afterVersion)
-        .lte("version", targetVersion ?? Infinity),
-    )
-    .take(MAX_DELTA_FETCH);
+    .withIndex("id_version", (q) => q.eq("id", id).gt("version", afterVersion));
+  for await (const delta of history) {
+    // Even the row rejected at the boundary has been read in full. Its bytes
+    // consume the one-document reserve; slicing the first row cannot save IO.
+    bytesRead += getConvexSize(delta);
+    const deltaResponseBytes =
+      getConvexSize(delta.steps) +
+      getConvexSize(delta.clientId) * delta.steps.length;
+    if (
+      deltas.length > 0 &&
+      (steps + delta.steps.length > MAX_HISTORY_PAGE_STEPS ||
+        bytesRead > MAX_HISTORY_PAGE_BYTES ||
+        responseBytes + deltaResponseBytes > MAX_HISTORY_PAGE_BYTES)
+    ) {
+      break;
+    }
+    deltas.push(delta);
+    steps += delta.steps.length;
+    responseBytes += deltaResponseBytes;
+    if (
+      deltas.length >= MAX_HISTORY_PAGE_RECORDS ||
+      steps >= MAX_HISTORY_PAGE_STEPS ||
+      bytesRead >= MAX_HISTORY_PAGE_BYTES ||
+      responseBytes >= MAX_HISTORY_PAGE_BYTES
+    ) {
+      break;
+    }
+  }
+  return deltas;
+}
+
+async function fetchSteps(ctx: QueryCtx, id: string, afterVersion: number) {
+  const deltas = await readHistoryPage(ctx, id, afterVersion);
   if (deltas.length > 0) {
     const firstDelta = deltas[0];
     if (firstDelta.version - firstDelta.steps.length > afterVersion) {
@@ -181,39 +223,7 @@ async function fetchSteps(
       );
     }
   }
-  const [steps, clientIds] = stepsAndClientIds(deltas);
-  if (deltas.length === MAX_DELTA_FETCH) {
-    console.warn(
-      `Max delta fetch reached: ${id} ${afterVersion}...${
-        targetVersion ?? "end"
-      } stopped at ${deltas[deltas.length - 1].version}`,
-    );
-    return [steps, clientIds] as const;
-  }
-  const lastDelta = deltas[deltas.length - 1];
-  if (targetVersion && (!lastDelta || lastDelta.version < targetVersion)) {
-    const nextDelta = await ctx.db
-      .query("deltas")
-      .withIndex("id_version", (q) =>
-        q.eq("id", id).gt("version", lastDelta.version),
-      )
-      .first();
-    if (!nextDelta) {
-      throw new Error(
-        `Missing steps ${lastDelta ? lastDelta.version + 1 : afterVersion}...${targetVersion}`,
-      );
-    }
-    for (let i = 0; i < targetVersion - lastDelta.version; i++) {
-      steps.push(nextDelta.steps[i]);
-      clientIds.push(nextDelta.clientId);
-    }
-  }
-  if (targetVersion && steps.length !== targetVersion - afterVersion) {
-    throw new Error(
-      `Steps mismatch ${afterVersion}...${targetVersion}: ${steps.length}`,
-    );
-  }
-  return [steps, clientIds] as const;
+  return stepsAndClientIds(deltas);
 }
 
 export const getSteps = query({
@@ -300,22 +310,43 @@ export const deleteSteps = mutation({
         beforeTs = Math.min(beforeTs, latestSnapshot._creationTime);
       }
     }
-    const deltas = (
-      await ctx.db
-        .query("deltas")
-        .withIndex("id_version", (q) =>
-          q.eq("id", args.id).gt("version", args.afterVersion ?? -Infinity),
-        )
-        .take(MAX_DELTA_FETCH)
-    ).filter((doc) => doc._creationTime < beforeTs);
-    await Promise.all(deltas.map((doc) => ctx.db.delete("deltas", doc._id)));
-    if (deltas.length === MAX_DELTA_FETCH) {
-      await ctx.scheduler.runAfter(0, api.lib.deleteSteps, {
-        id: args.id,
-        beforeTs,
-        // We already checked that the timestamp is before
-        deleteNewerThanLatestSnapshot: true,
-      });
+    const history = ctx.db
+      .query("deltas")
+      .withIndex("id_version", (q) =>
+        q.eq("id", args.id).gt("version", args.afterVersion ?? -Infinity),
+      );
+    let records = 0;
+    let steps = 0;
+    let bytesRead = 0;
+    for await (const delta of history) {
+      // Creation times and versions increase together per document, so the
+      // first ineligible row ends the eligible prefix. Never reschedule it.
+      if (delta._creationTime >= beforeTs) {
+        break;
+      }
+      bytesRead += getConvexSize(delta);
+      records++;
+      steps += delta.steps.length;
+      await ctx.db.delete("deltas", delta._id);
+      // Unlike a returned page, deletion consumes the crossing row too. Every
+      // walked row has now been deleted, so this cursor cannot skip a row.
+      // Reads/writes stay below 6 MiB + one 1 MiB document, with at most 100
+      // rows. No large array is returned, so the step threshold may overshoot
+      // by one whole record as well.
+      if (
+        records >= MAX_HISTORY_PAGE_RECORDS ||
+        steps >= MAX_HISTORY_PAGE_STEPS ||
+        bytesRead >= MAX_HISTORY_PAGE_BYTES
+      ) {
+        await ctx.scheduler.runAfter(0, api.lib.deleteSteps, {
+          id: args.id,
+          beforeTs,
+          afterVersion: delta.version,
+          // Preserve the timestamp already clamped to the latest snapshot.
+          deleteNewerThanLatestSnapshot: true,
+        });
+        break;
+      }
     }
   },
 });

@@ -63,6 +63,8 @@ export class ProsemirrorSync<Id extends string = string> {
 
   /**
    * Get the latest document version and content.
+   * History pages share the caller's transaction limits in a mutation; this
+   * method does not make arbitrarily large histories fit one transaction.
    *
    * @param ctx - A Convex mutation context.
    * @param id - The document ID.
@@ -300,6 +302,18 @@ export class ProsemirrorSync<Id extends string = string> {
   }
 }
 
+/**
+ * Replay every page from the latest snapshot. In a mutation the largest
+ * history is limited by 16 MiB of cumulative reads (snapshot plus full rows,
+ * including boundary rows read again on the next page), 32,000 scanned rows,
+ * and 4,096 index ranges. Pagination does not reset these limits. A sufficient
+ * envelope for this helper alone is a snapshot up to 1 MiB and at most 2,000
+ * nonempty history rows totaling 6 MiB, with each row fitting the page's step
+ * and expanded-response budgets: even twice-read rows use at most 13 MiB and
+ * 4,001 scans, and at most 2,002 index ranges including the terminal query.
+ * Other caller work consumes the same limits. Actions issue separate queries
+ * instead, without a single consistent transaction spanning all the pages.
+ */
 async function getLatestVersion(
   ctx: MutationCtx | ActionCtx,
   component: ComponentApi,
@@ -312,12 +326,16 @@ async function getLatestVersion(
   }
   const content = JSON.parse(snapshot.content);
   const transform = new Transform(schema.nodeFromJSON(content));
-  const { steps, version } = await ctx.runQuery(component.lib.getSteps, {
-    id,
-    version: snapshot.version,
-  });
-  for (const step of steps) {
-    transform.step(Step.fromJSON(schema, JSON.parse(step)));
+  let version = snapshot.version;
+  while (true) {
+    const page = await ctx.runQuery(component.lib.getSteps, { id, version });
+    for (const step of page.steps) {
+      transform.step(Step.fromJSON(schema, JSON.parse(step)));
+    }
+    version = page.version;
+    if (page.steps.length === 0) {
+      break;
+    }
   }
   return { transform, version };
 }

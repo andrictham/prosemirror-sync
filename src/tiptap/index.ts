@@ -169,6 +169,11 @@ export function useTiptapSync(
   } as const;
 }
 
+/**
+ * Synchronize complete history through successive bounded pages. Backend and
+ * provider versions should be upgraded together: an older provider applies
+ * only one catch-up page and can remain stale until another change arrives.
+ */
 export function syncExtension(
   convex: ConvexReactClient,
   id: string,
@@ -572,22 +577,26 @@ async function doSync(
   }
   if (isStopped() || editor.isDestroyed) return false;
   const version = collab.getVersion(editor.state);
-  if (serverVersion !== null && serverVersion > version) {
+  while (
+    serverVersion !== null &&
+    serverVersion > collab.getVersion(editor.state)
+  ) {
+    const requestedVersion = collab.getVersion(editor.state);
     log("Updating to server version", {
       id,
-      version,
+      version: requestedVersion,
       serverVersion,
     });
     const steps = await convex.query(syncApi.getSteps, {
       id,
-      version,
+      version: requestedVersion,
     });
     if (isStopped() || editor.isDestroyed) return false;
     // Apply only the steps we don't already have: the local version can
     // advance during the await. Re-applying a prefix would push our version
     // past the server's, and the next submitSteps would then write a delta
     // with a version gap, which no client can read past.
-    const skip = collab.getVersion(editor.state) - version;
+    const skip = collab.getVersion(editor.state) - requestedVersion;
     if (skip >= 0 && skip < steps.steps.length) {
       applyConfirmedSteps(
         editor,
@@ -596,6 +605,11 @@ async function doSync(
           .map((step) => readPersistedStep(editor.schema, step)),
         steps.clientIds.slice(skip),
       );
+    }
+    // Byte or record limits can stop even a very short nonterminal page.
+    // Only the watched head or an empty page establishes completion.
+    if (steps.version >= serverVersion || steps.steps.length === 0) {
+      break;
     }
   }
   let anyChanges = false;
@@ -670,11 +684,12 @@ function receiveSteps(
   );
 }
 
-// How many rebase rounds the post-destroy flush attempts before giving up and
-// reporting the steps as lost. Successful submissions don't count — they always
-// make progress — so this only trips when other clients keep winning the race.
+// How many consecutive rebase rounds without version progress the post-destroy
+// flush attempts before reporting the steps as lost. Advancing history pages
+// and successful submissions reset the count, even when catch-up takes more
+// than 20 pages.
 // The flush has no editor and no user behind it, and the page may be unloading,
-// so it can't retry indefinitely the way a live editor does.
+// so it cannot keep retrying a stalled server indefinitely.
 const MAX_FLUSH_REBASES = 20;
 
 /**
@@ -727,7 +742,6 @@ export async function _flushPendingSteps(
         ),
       );
     } else {
-      rebases++;
       state = state.apply(
         collab.receiveTransaction(
           state,
@@ -739,6 +753,7 @@ export async function _flushPendingSteps(
         ),
       );
     }
+    rebases = collab.getVersion(state) > sendable.version ? 0 : rebases + 1;
   }
   return "gave-up";
 }

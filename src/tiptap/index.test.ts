@@ -250,17 +250,17 @@ describe("_flushPendingSteps", () => {
     );
   });
 
-  test("gives up instead of rebasing forever", async () => {
+  test("gives up after repeated rebase responses without version progress", async () => {
     const state = typeText(stateAt(1, "me"), "hello");
-    // A server that never accepts our steps: every submit needs another rebase.
-    const foreignStep = stepsJSON(typeText(stateAt(1, "other"), "x"))[0];
+    // An advancing prefix is useful progress; only empty responses count
+    // toward the bounded retry policy.
     let calls = 0;
     const convex = fakeClient(() => {
       calls++;
       return Promise.resolve({
         status: "needs-rebase",
-        steps: [foreignStep],
-        clientIds: ["other"],
+        steps: [],
+        clientIds: [],
       } as const);
     });
 
