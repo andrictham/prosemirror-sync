@@ -1,4 +1,4 @@
-import { getConvexSize, v } from "convex/values";
+import { ConvexError, getConvexSize, getDocumentSize, v } from "convex/values";
 import {
   mutation,
   type MutationCtx,
@@ -17,6 +17,8 @@ const MAX_HISTORY_PAGE_STEPS = 6_144;
 // 16 MiB, leaving room for callers' other work. Expanded clientIds count toward
 // the response target too, since each stored ID is repeated for every step.
 const MAX_HISTORY_PAGE_BYTES = 6 * 1024 * 1024;
+// Cover the query/rebase response's object fields and array framing.
+const HISTORY_RESPONSE_OVERHEAD_BYTES = 128;
 // Independently bound scans, including histories containing empty delta rows.
 const MAX_HISTORY_PAGE_RECORDS = 100;
 const MAX_SNAPSHOT_FETCH = 10;
@@ -98,16 +100,34 @@ export const submitSteps = mutation({
     v.object({ status: v.literal("synced") }),
   ),
   handler: async (ctx, args) => {
-    const [steps, clientIds] = await fetchSteps(ctx, args.id, args.version);
-    if (steps.length > 0) {
-      return { status: "needs-rebase", clientIds, steps } as const;
+    if (args.steps.length > MAX_HISTORY_PAGE_STEPS) {
+      throw new ConvexError(
+        "Step submission exceeds history page limit of 6,144 steps",
+      );
     }
-    await ctx.db.insert("deltas", {
+    const delta = {
       id: args.id,
       version: args.version + args.steps.length,
       clientId: args.clientId,
       steps: args.steps,
-    });
+    };
+    // Whole-record paging must always admit its first record to make progress.
+    // Validate before reading history, even for a stale writer, so no newly
+    // accepted record can exceed either the read or expanded response budget.
+    if (
+      getDocumentSize(delta) > MAX_HISTORY_PAGE_BYTES ||
+      HISTORY_RESPONSE_OVERHEAD_BYTES + historyResponseBytes(delta) >
+        MAX_HISTORY_PAGE_BYTES
+    ) {
+      throw new ConvexError(
+        "Step submission exceeds history page limit of 6 MiB",
+      );
+    }
+    const [steps, clientIds] = await fetchSteps(ctx, args.id, args.version);
+    if (steps.length > 0) {
+      return { status: "needs-rebase", clientIds, steps } as const;
+    }
+    await ctx.db.insert("deltas", delta);
     return { status: "synced" } as const;
   },
 });
@@ -122,6 +142,15 @@ function stepsAndClientIds(deltas: Doc<"deltas">[]) {
     }
   }
   return [steps, clientIds] as const;
+}
+
+function historyResponseBytes(
+  delta: Pick<Doc<"deltas">, "steps" | "clientId">,
+) {
+  return (
+    getConvexSize(delta.steps) +
+    getConvexSize(delta.clientId) * delta.steps.length
+  );
 }
 
 export const getSnapshot = query({
@@ -156,13 +185,11 @@ export const getSnapshot = query({
 });
 
 /**
- * Read a whole-record prefix. The caller's admission policy must bound each
- * individual record to 6,144 steps and 6 MiB of expanded response data,
- * including repeated client IDs. A first record is always included so paging
- * makes progress; the app's 5,000-step/900,000-byte policy bounds step data,
- * but callers must also keep client IDs small enough for the expanded result.
- * Already-stored oversized singleton records cannot satisfy both this bound
- * and whole-record progress without a separate protocol or admission change.
+ * Read a whole-record prefix. submitSteps bounds each new record to 6,144
+ * steps and 6 MiB of stored and expanded response data, including repeated
+ * client IDs and response framing. A first record is always included so paging
+ * makes progress. Records written before admission checks must also satisfy
+ * these limits; reading cannot repair an already-stored oversized record.
  */
 async function readHistoryPage(
   ctx: QueryCtx,
@@ -172,8 +199,7 @@ async function readHistoryPage(
   const deltas: Doc<"deltas">[] = [];
   let steps = 0;
   let bytesRead = 0;
-  // Reserve the response's object/array fields and the version or status.
-  let responseBytes = 128;
+  let responseBytes = HISTORY_RESPONSE_OVERHEAD_BYTES;
   const history = ctx.db
     .query("deltas")
     .withIndex("id_version", (q) => q.eq("id", id).gt("version", afterVersion));
@@ -181,9 +207,7 @@ async function readHistoryPage(
     // Even the row rejected at the boundary has been read in full. Its bytes
     // consume the one-document reserve; slicing the first row cannot save IO.
     bytesRead += getConvexSize(delta);
-    const deltaResponseBytes =
-      getConvexSize(delta.steps) +
-      getConvexSize(delta.clientId) * delta.steps.length;
+    const deltaResponseBytes = historyResponseBytes(delta);
     if (
       deltas.length > 0 &&
       (steps + delta.steps.length > MAX_HISTORY_PAGE_STEPS ||
