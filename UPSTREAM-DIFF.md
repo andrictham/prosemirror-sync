@@ -293,6 +293,20 @@ our tests are both kept.
   after content-checked own-step confirmation.
 - **Size:** own files: 2 files, +301. `index.ts`: +33.
 
+## Optional destroy-time flush
+
+- **What:** `flushOnDestroy: false` skips the headless submission of unconfirmed
+  steps when an editor is destroyed, along with its data-loss report. The
+  default, `true`, keeps the flush.
+- **Why:** An app that keeps its own durable copy of unsent steps, for example
+  from `onPendingChange`, submits them itself later. A concurrent flush from the
+  destroyed editor would race that resubmission.
+- **Files:** `src/tiptap/flush-on-destroy.test.ts`, plus the option and the
+  `onDestroy` condition in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Make the destroy-time flush optional.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request.
+- **Size:** own files: 1 file, +68. `index.ts`: +15 / -1.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60

@@ -165,6 +165,15 @@ export type UseSyncOptions = {
    * Exceptions are isolated and never interrupt sync.
    */
   onStepsDropped?: (event: StepsDropped) => void;
+  /**
+   * Whether destroying an editor that still has unconfirmed steps submits
+   * them headlessly (`_flushPendingSteps`). Set `false` when the app keeps
+   * its own copy of unsent steps, for example from `onPendingChange`, and
+   * submits them itself later. Those steps are then neither flushed nor
+   * reported as lost.
+   * @default true
+   */
+  flushOnDestroy?: boolean;
 };
 
 export function useTiptapSync(
@@ -565,7 +574,12 @@ export function syncExtension(
       // in-app unmount. 'destroy' fires before the view is torn down and the
       // state is immutable, so it's safe to capture and use afterwards.
       const state = editor.state;
-      if (wasActive && !schemaFatal && collab.sendableSteps(state)) {
+      if (
+        wasActive &&
+        !schemaFatal &&
+        opts?.flushOnDestroy !== false &&
+        collab.sendableSteps(state)
+      ) {
         void _flushPendingSteps(convex, syncApi, id, state, opts?.debug).then(
           (outcome) => {
             if (outcome === "gave-up") {
