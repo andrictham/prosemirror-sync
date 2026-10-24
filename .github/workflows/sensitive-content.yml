@@ -40,6 +40,15 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
+      # Commits reachable from upstream/main are upstream's own, so the scan
+      # skips them and a merge of a new upstream release passes.
+      - name: Fetch upstream
+        env:
+          UPSTREAM_URL: https://github.com/convex/prosemirror-sync.git
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream main
+
       - name: Test the scanner
         run: scripts/check-sensitive.test.sh
 

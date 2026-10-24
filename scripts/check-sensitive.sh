@@ -7,11 +7,13 @@
 #   scripts/check-sensitive.sh message <file>      # a commit message file
 #   scripts/check-sensitive.sh range <base> <head> [branch]
 #                                                  # a pushed range
-#   scripts/check-sensitive.sh tree                # everything not in upstream
+#   scripts/check-sensitive.sh tree                # every commit not in upstream
 #
 # Each mode scans only added lines, added file names, commit messages and the
-# branch name, so upstream's own content is never scanned. Every mode also
-# checks that workflows use GitHub-hosted runners.
+# branch name. The range and tree modes scan each commit on its own, and skip
+# every commit reachable from upstream (see upstream_ref), so upstream's own
+# content is never scanned. Every mode also checks that workflows use
+# GitHub-hosted runners.
 #
 # Private terms are read from $SENSITIVE_TERMS (newline-separated), or from
 # ~/.config/prosemirror-sync/sensitive-terms. They match whole words,
@@ -45,28 +47,81 @@ add_line() {
   printf '%s\n' "$2" >>"$texts"
 }
 
-# Record the added lines and added file names of `git diff <args>`.
+# Record the added lines of a patch read from stdin, ordinary or combined.
 #
-# Added and removed lines are marked with ">" and "<" instead of "+" and "-",
-# so an added line whose text starts with "++ " can never be mistaken for the
-# "+++ <path>" file header.
-add_diff() {
-  git diff -U0 --no-color --no-ext-diff --no-prefix \
-    --output-indicator-new='>' --output-indicator-old='<' \
-    --output-indicator-context='=' "$@" |
-    awk -v locations="$locations" -v texts="$texts" '
-      /^\+\+\+ / { path = substr($0, 5); next }
-      /^@@ / { split($3, range, ","); line = substr(range[1], 2) + 0; next }
-      /^>/ {
-        print path ":" line >> locations
-        print substr($0, 2) >> texts
-        line++
+# File headers are read only between a "diff " line and the first hunk, so an
+# added line whose text starts with "++ " is never taken for a "+++ <path>"
+# header. Ordinary diffs mark added and removed lines with ">" and "<" as well;
+# combined diffs of merge commits keep "+" and "-" in one column per parent.
+# A combined diff line counts as added only when it is new against every
+# parent, so content a merge brings in from one side is not recorded again.
+record_patch() {
+  awk -v locations="$locations" -v texts="$texts" '
+    /^diff / { header = 1; next }
+    header && /^\+\+\+ / { path = substr($0, 5); next }
+    /^@@/ {
+      header = 0
+      match($0, /^@+/)
+      columns = RLENGTH - 1
+      for (i = 2; i <= NF; i++) {
+        if (substr($i, 1, 1) == "+") {
+          split(substr($i, 2), range, ",")
+          line = range[1] + 0
+          break
+        }
       }
-    '
+      next
+    }
+    header || columns == 0 || /^\\/ { next }
+    {
+      added = 1
+      removed = 0
+      for (i = 1; i <= columns; i++) {
+        mark = substr($0, i, 1)
+        if (mark != "+" && mark != ">") added = 0
+        if (mark == "-" || mark == "<") removed = 1
+      }
+      if (added) {
+        print path ":" line >> locations
+        print substr($0, columns + 1) >> texts
+      }
+      if (!removed) line++
+    }
+  '
+}
+
+diff_options=(-U0 --no-color --no-ext-diff --no-prefix)
+indicator_options=(--output-indicator-new='>' --output-indicator-old='<'
+  --output-indicator-context='=')
+
+# Record the added lines and added file names of `git diff <args>`.
+add_diff() {
+  git diff "${diff_options[@]}" "${indicator_options[@]}" "$@" | record_patch
   local name
   while IFS= read -r name; do
     add_line "file name $name" "$name"
   done < <(git diff --name-only --diff-filter=AR "$@")
+}
+
+# Record what one merge commit itself adds: lines and file names that are new
+# against every parent. What it brings in from a parent belongs to that
+# parent's own commits.
+add_merge() {
+  local commit=$1 parent name
+  git diff-tree -p --cc --no-commit-id "${diff_options[@]}" "$commit" |
+    record_patch
+  local -a parents
+  read -r -a parents < <(git rev-list --parents -n 1 "$commit")
+  git diff --name-only --diff-filter=AR "${parents[1]}" "$commit" |
+    sort >"$scratch/added-names"
+  for parent in "${parents[@]:2}"; do
+    git diff --name-only --diff-filter=AR "$parent" "$commit" | sort |
+      comm -12 "$scratch/added-names" - >"$scratch/added-names.next"
+    mv "$scratch/added-names.next" "$scratch/added-names"
+  done
+  while IFS= read -r name; do
+    add_line "file name $name" "$name"
+  done <"$scratch/added-names"
 }
 
 # Record a commit message, without git's comment lines or the allowed trailer.
@@ -82,17 +137,52 @@ add_message() {
   done <"$file"
 }
 
+# Record the message of every commit `git rev-list <args>` selects.
 add_commit_messages() {
   local commit
-  for commit in $(git rev-list "$1"); do
+  for commit in $(git rev-list --reverse "$@"); do
     git log -1 --format=%B "$commit" >"$scratch/message"
     add_message "commit $(git rev-parse --short "$commit") message" \
       "$scratch/message"
   done
 }
 
+# Record the changes and messages of every commit `git rev-list <args>`
+# selects, one commit at a time, so content that a later commit removed is
+# still scanned: it stays in the published history.
+add_commits() {
+  local commit parents empty_tree
+  empty_tree=$(git hash-object -t tree /dev/null)
+  for commit in $(git rev-list --reverse "$@"); do
+    parents=$(git rev-list --parents -n 1 "$commit" | wc -w)
+    case $parents in
+      1) add_diff "$empty_tree" "$commit" ;;
+      2) add_diff "$commit^" "$commit" ;;
+      *) add_merge "$commit" ;;
+    esac
+  done
+  add_commit_messages "$@"
+}
+
 upstream_commit() {
   sed -n 's/.*"upstreamCommit": *"\([0-9a-f]*\)".*/\1/p' fork-base.json
+}
+
+# The newest upstream commit available: upstream/main when an `upstream`
+# remote has been fetched, as CI does, or else the base in fork-base.json.
+# Commits reachable from it are upstream's own and are never scanned, so
+# merging a new upstream release does not fail on upstream's content.
+upstream_ref() {
+  local ref
+  for ref in refs/remotes/upstream/main "$(upstream_commit)"; do
+    if [ -n "$ref" ] &&
+      git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
+      printf '%s\n' "$ref"
+      return
+    fi
+  done
+  echo "sensitive-content: no upstream commit found; fetch upstream or check fork-base.json" >&2
+  exit 2
 }
 
 # The base for a pushed range whose remote side is new or unknown.
@@ -241,19 +331,21 @@ case $mode in
     # After a force-push the old tip is not an ancestor; scan from where the
     # histories meet.
     base=$(git merge-base "$base" "$head" || upstream_commit)
-    add_diff "$base" "$head"
-    add_commit_messages "$base..$head"
+    upstream=$(upstream_ref)
+    add_commits "$base..$head" --not "$upstream"
     if [ -n "${4:-}" ]; then
       add_line "branch name" "$4"
     fi
-    gitleaks_scan git --log-opts="$base..$head" .
+    gitleaks_scan git --log-opts="$base..$head --not $upstream" .
     ;;
   tree)
-    base=$(upstream_commit)
-    add_diff "$base" HEAD
-    add_commit_messages "$base..HEAD"
+    # The fork's current tree against the upstream it last merged, plus every
+    # fork commit message.
+    upstream=$(upstream_ref)
+    add_diff "$(git merge-base "$upstream" HEAD)" HEAD
+    add_commit_messages HEAD --not "$upstream"
     add_line "branch name" "$(git rev-parse --abbrev-ref HEAD)"
-    gitleaks_scan git --log-opts="$base..HEAD" .
+    gitleaks_scan git --log-opts="HEAD --not $upstream" .
     ;;
   *)
     sed -n '5,10p' "$0" >&2

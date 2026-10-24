@@ -64,22 +64,31 @@ commit's own contribution listed there.
 
 ## Sensitive-content guard
 
-- **What:** `scripts/check-sensitive.sh` scans added lines, added file names,
-  commit messages and branch names that differ from upstream for secrets,
-  generic denylist patterns (`.github/sensitive-patterns.txt`), email addresses
-  other than noreply ones, private terms supplied from outside the repository
-  (whole words, ignoring case), and workflow runner labels that are not
-  GitHub-hosted. It runs gitleaks when installed. The `pre-commit`, `commit-msg`
-  and `pre-push` hooks in `.githooks` and the `sensitive-content` workflow job
-  all call it. The `prepare` script sets `core.hooksPath` in a local git
-  checkout, and does nothing in CI or outside a checkout. Every workflow now
-  pins `ubuntu-24.04` instead of `ubuntu-latest`. The workflow never cancels a
-  run, and groups runs by commit, because each run scans only its own pushed
-  range. Diff lines are read with `>` and `<` as the added and removed markers,
-  so an added line that starts with `++ ` cannot pass for a file header.
-  `scripts/check-sensitive.test.sh` (`npm run test:sensitive`, also a step of
-  the workflow) plants content in throwaway repositories and checks the
-  scanner's and hooks' verdicts.
+- **What:**
+  - `scripts/check-sensitive.sh` scans added lines, added file names, commit
+    messages and branch names that differ from upstream for secrets, generic
+    denylist patterns (`.github/sensitive-patterns.txt`), email addresses other
+    than noreply ones, private terms supplied from outside the repository (whole
+    words, ignoring case), and workflow runner labels that are not
+    GitHub-hosted. It runs gitleaks when installed.
+  - A pushed range is scanned one commit at a time, so content a later commit
+    removed is still caught. Commits reachable from upstream are skipped: from
+    `upstream/main` when an `upstream` remote is fetched, as the workflow does,
+    or else from the base in `fork-base.json`. A merge commit contributes only
+    what is new against every parent, so merging an upstream release does not
+    fail on upstream's own content.
+  - Diff lines are read with `>` and `<` as the added and removed markers, and
+    file headers only before a file's first hunk, so an added line that starts
+    with `++ ` cannot pass for a header.
+  - The `pre-commit`, `commit-msg` and `pre-push` hooks in `.githooks` and the
+    `sensitive-content` workflow job all call it. The `prepare` script sets
+    `core.hooksPath` in a local git checkout, and does nothing in CI or outside
+    a checkout. The workflow never cancels a run, and groups runs by commit,
+    because each run scans only its own pushed range.
+  - `scripts/check-sensitive.test.sh` (`npm run test:sensitive`, also a step of
+    the workflow) plants content in throwaway repositories and checks the
+    scanner's and hooks' verdicts.
+  - Every workflow now pins `ubuntu-24.04` instead of `ubuntu-latest`.
 - **Why:** The repository is public, and the rules in `AGENTS.md` need a check
   that runs before content leaves a machine and again in CI.
 - **Files:** `scripts/check-sensitive.sh`, `scripts/check-sensitive.test.sh`,
@@ -89,7 +98,7 @@ commit's own contribution listed there.
   a `.gitignore` entry and `AGENTS.md`.
 - **Commits:** ci: Guard against sensitive content. ci: Never cancel a
   sensitive-content run. ci: Read added diff lines unambiguously. ci: Match
-  private terms regardless of case.
+  private terms regardless of case. ci: Skip upstream's commits in the scan.
 - **Upstream status:** Fork-only. Not for upstream. The `runs-on` change touches
   upstream's `test.yml`.
 

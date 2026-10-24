@@ -140,5 +140,64 @@ git -C "$repo" add notes.txt
 SENSITIVE_TERMS=ZebraFruit expect pass "terms match only whole words" \
   "$repo" scan staged || true
 
+# --- Upstream merges ------------------------------------------------------
+
+at='@'
+planted_email="someone${at}example.com"
+
+# A fork whose main has one clean commit past the upstream base, and an
+# upstream release, at refs/remotes/upstream/main, whose content includes an
+# email address. Prints the repository path; the fork tip is tagged
+# fork-tip and the release upstream-release.
+fork_with_upstream_release() {
+  local repo
+  repo=$(new_repo)
+  commit_file "$repo" fork.txt "fork work" >/dev/null
+  git -C "$repo" tag fork-tip
+  git -C "$repo" switch -q -c upstream-line "$(git -C "$repo" rev-list --max-parents=0 HEAD)"
+  commit_file "$repo" SUPPORT.md "Write to $planted_email" "Upstream release"
+  git -C "$repo" tag upstream-release
+  git -C "$repo" update-ref refs/remotes/upstream/main upstream-release
+  git -C "$repo" switch -q main
+  git -C "$repo" branch -q -D upstream-line
+  printf '%s\n' "$repo"
+}
+
+repo=$(fork_with_upstream_release)
+git -C "$repo" merge -q --no-edit upstream-release
+expect pass "a merge of upstream skips upstream's own commits" \
+  "$repo" scan range fork-tip HEAD upstream-sync || true
+
+repo=$(fork_with_upstream_release)
+git -C "$repo" merge -q --no-edit upstream-release
+git -C "$repo" update-ref -d refs/remotes/upstream/main
+expect fail "without an upstream ref, commits past fork-base.json are scanned" \
+  "$repo" scan range fork-tip HEAD || true
+
+repo=$(fork_with_upstream_release)
+git -C "$repo" merge -q --no-edit upstream-release
+commit_file "$repo" contact.txt "Ask $planted_email" >/dev/null
+expect fail "a fork commit after an upstream merge is still scanned" \
+  "$repo" scan range fork-tip HEAD || true
+expect_output "only the fork commit is reported" has "contact.txt:1" || true
+expect_output "upstream's file is not reported" lacks "SUPPORT.md" || true
+
+repo=$(fork_with_upstream_release)
+git -C "$repo" merge -q --no-commit upstream-release >/dev/null 2>&1
+printf 'Ask %s\n' "$planted_email" >>"$repo/fork.txt"
+git -C "$repo" add fork.txt
+git -C "$repo" commit -q --no-edit
+expect fail "a merge commit's own additions are scanned" \
+  "$repo" scan range fork-tip HEAD || true
+expect_output "a merge commit's own addition is reported" has "fork.txt:2" ||
+  true
+
+repo=$(fork_with_upstream_release)
+commit_file "$repo" draft.txt "Ask $planted_email" >/dev/null
+git -C "$repo" rm -q draft.txt
+git -C "$repo" commit -q -m "Remove the draft"
+expect fail "content removed later in the range is still scanned" \
+  "$repo" scan range fork-tip HEAD || true
+
 echo "check-sensitive tests: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
