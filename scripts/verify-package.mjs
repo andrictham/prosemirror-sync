@@ -31,6 +31,20 @@ symlinkSync(
 const manifest = JSON.parse(
   readFileSync(path.join(packageRoot, "package.json"), "utf8"),
 );
+// Package managers run these when the package is installed, or prepared from
+// a git dependency, and some refuse to install a dependency that has them.
+for (const script of [
+  "preinstall",
+  "install",
+  "postinstall",
+  "prepare",
+  "prepack",
+  "prepublish",
+])
+  assert(
+    !manifest.scripts || !(script in manifest.scripts),
+    `package.json: install-time script "${script}"`,
+  );
 for (const [name, target] of Object.entries(manifest.exports)) {
   const targets = typeof target === "string" ? [target] : Object.values(target);
   for (const file of targets)

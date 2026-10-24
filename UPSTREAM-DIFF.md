@@ -89,9 +89,13 @@ commit's own contribution listed there.
     with `++ ` cannot pass for a header.
   - The `pre-commit`, `commit-msg` and `pre-push` hooks in `.githooks` and the
     `sensitive-content` workflow job all call it. `pre-push` runs each scan with
-    no standard input, so a scan cannot consume the rest of the pushed refs. The
-    `prepare` script sets `core.hooksPath` in a local git checkout, and does
-    nothing in CI or outside a checkout. The workflow never cancels a run, and
+    no standard input, so a scan cannot consume the rest of the pushed refs.
+    `npm run setup:hooks` sets `core.hooksPath`, once per clone. It is not an
+    install lifecycle script, because apps install the package from git and some
+    package managers refuse a dependency with install-time scripts unless the
+    app allows them. `scripts/verify-package.mjs` fails when the packed
+    `package.json` has a `preinstall`, `install`, `postinstall`, `prepare`,
+    `prepack` or `prepublish` script. The workflow never cancels a run, and
     groups runs by commit, because each run scans only its own pushed range.
   - `scripts/check-sensitive.test.sh` (`npm run test:sensitive`, also a step of
     the workflow) plants content in throwaway repositories and checks the
@@ -102,12 +106,14 @@ commit's own contribution listed there.
 - **Files:** `scripts/check-sensitive.sh`, `scripts/check-sensitive.test.sh`,
   `.githooks/*`, `.github/sensitive-patterns.txt`,
   `.github/workflows/sensitive-content.yml`, plus the `runs-on` lines of the
-  other workflows, the `prepare` and `test:sensitive` scripts in `package.json`,
-  and `AGENTS.md`.
+  other workflows, the `setup:hooks` and `test:sensitive` scripts in
+  `package.json`, the install-script check in `scripts/verify-package.mjs`, and
+  `AGENTS.md`.
 - **Commits:** ci: Guard against sensitive content. ci: Never cancel a
   sensitive-content run. ci: Read added diff lines unambiguously. ci: Match
   private terms regardless of case. ci: Skip upstream's commits in the scan. ci:
   Scan every ref in pre-push. ci: Keep private patterns with the private terms.
+  ci: Install hooks without a lifecycle script.
 - **Upstream status:** Fork-only. Not for upstream. The `runs-on` change touches
   upstream's `test.yml`.
 
