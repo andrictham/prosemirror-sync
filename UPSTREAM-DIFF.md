@@ -273,6 +273,26 @@ our tests are both kept.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
 - **Size:** own files: 2 files, +245. `index.ts`: +39.
 
+## Dropped-step reports
+
+- **What:** The optional `onStepsDropped(event)` callback fires when applying a
+  batch of confirmed steps to a live editor cost local edits. `droppedCount`
+  counts unconfirmed steps that no longer applied after a rebase and were
+  discarded, matched by their origin transaction. `unmatchedCount` counts steps
+  under the editor's client ID that did not match its own, which content-checked
+  confirmation applied as another writer's. The event carries `docBefore`, the
+  document with every local edit, plus the client ID and new version. It is
+  isolated like `onSyncObservation`. The destroy-time flush does not report.
+- **Why:** prosemirror-collab discards a rebased step that no longer applies
+  without telling anyone. An app can keep `docBefore` so the user's edit is not
+  lost silently, and can rebuild an editor whose client ID is shared.
+- **Files:** `src/tiptap/dropped-steps.ts`, `src/tiptap/dropped-steps.test.ts`,
+  plus the option and `applyConfirmedSteps` in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Report steps dropped by rebase.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request,
+  after content-checked own-step confirmation.
+- **Size:** own files: 2 files, +301. `index.ts`: +33.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60

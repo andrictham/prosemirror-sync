@@ -18,6 +18,11 @@ import * as collab from "prosemirror-collab";
 import { Step } from "@tiptap/pm/transform";
 import { useCallback, useMemo, useRef } from "react";
 import type { SyncApi } from "../client/index.js";
+import {
+  countDroppedSteps,
+  droppedStepsReport,
+  type StepsDropped,
+} from "./dropped-steps.js";
 import { matchOwnSteps } from "./own-steps.js";
 import {
   createPendingStepsReporter,
@@ -37,6 +42,7 @@ export type {
 } from "./sync-observations.js";
 export type { PendingSteps, StepJSON, SyncBase } from "./pending-steps.js";
 export type { RetryOptions } from "./retry.js";
+export type { StepsDropped } from "./dropped-steps.js";
 
 // How many steps we will attempt to sync in one request.
 const MAX_STEPS_SYNC = 1000;
@@ -149,6 +155,16 @@ export type UseSyncOptions = {
    * change or server update.
    */
   isTerminalError?: (error: unknown) => boolean;
+  /**
+   * Called when applying confirmed steps from the server cost local edits:
+   * unconfirmed steps that no longer applied after a rebase were discarded,
+   * or steps under this editor's client ID did not match its own and were
+   * applied as another writer's. `docBefore` still holds every local edit,
+   * so the app can keep a copy. Fires at most once per batch of received
+   * steps, only for a live editor. The destroy-time flush does not report.
+   * Exceptions are isolated and never interrupt sync.
+   */
+  onStepsDropped?: (event: StepsDropped) => void;
 };
 
 export function useTiptapSync(
@@ -379,6 +395,7 @@ export function syncExtension(
     clientIds: (string | number)[],
   ) {
     const fromVersion = collab.getVersion(editor.state);
+    const before = editor.state;
     const own = matchOwnSteps(editor.state, steps, clientIds);
     if (own.unmatched > 0) {
       log("Applying steps that share this client ID as another writer's", {
@@ -397,6 +414,22 @@ export function syncExtension(
         clientIds: Object.freeze([...clientIds]),
       }),
     );
+    if (opts?.onStepsDropped) {
+      const dropped = countDroppedSteps(before, editor.state, own.confirmed);
+      if (dropped > 0 || own.unmatched > 0) {
+        const report = droppedStepsReport(
+          editor,
+          before,
+          dropped,
+          own.unmatched,
+        );
+        try {
+          opts.onStepsDropped(report);
+        } catch (error) {
+          log("Ignoring onStepsDropped failure", error);
+        }
+      }
+    }
   }
 
   function releaseEditorResources(editor: Editor) {
