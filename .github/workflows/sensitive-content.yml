@@ -40,6 +40,9 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
+      - name: Test the scanner
+        run: scripts/check-sensitive.test.sh
+
       # Only the pushed range is scanned, so older history does not fail
       # every run. Private terms come from a secret, or a variable when no
       # secret is set; without either, only generic patterns are checked.

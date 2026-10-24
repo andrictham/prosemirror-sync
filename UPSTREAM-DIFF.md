@@ -74,14 +74,20 @@ commit's own contribution listed there.
   sets `core.hooksPath` in a local git checkout, and does nothing in CI or
   outside a checkout. Every workflow now pins `ubuntu-24.04` instead of
   `ubuntu-latest`. The workflow never cancels a run, and groups runs by commit,
-  because each run scans only its own pushed range.
+  because each run scans only its own pushed range. Diff lines are read with `>`
+  and `<` as the added and removed markers, so an added line that starts with
+  `++ ` cannot pass for a file header. `scripts/check-sensitive.test.sh`
+  (`npm run test:sensitive`, also a step of the workflow) plants content in
+  throwaway repositories and checks the scanner's and hooks' verdicts.
 - **Why:** The repository is public, and the rules in `AGENTS.md` need a check
   that runs before content leaves a machine and again in CI.
-- **Files:** `scripts/check-sensitive.sh`, `.githooks/*`,
-  `.github/sensitive-patterns.txt`, `.github/workflows/sensitive-content.yml`,
-  plus the `runs-on` lines of the other workflows, the `prepare` script in
-  `package.json`, a `.gitignore` entry and `AGENTS.md`.
-- **Commits:** ci: Guard against sensitive content.
+- **Files:** `scripts/check-sensitive.sh`, `scripts/check-sensitive.test.sh`,
+  `.githooks/*`, `.github/sensitive-patterns.txt`,
+  `.github/workflows/sensitive-content.yml`, plus the `runs-on` lines of the
+  other workflows, the `prepare` and `test:sensitive` scripts in `package.json`,
+  a `.gitignore` entry and `AGENTS.md`.
+- **Commits:** ci: Guard against sensitive content. ci: Never cancel a
+  sensitive-content run. ci: Read added diff lines unambiguously.
 - **Upstream status:** Fork-only. Not for upstream. The `runs-on` change touches
   upstream's `test.yml`.
 

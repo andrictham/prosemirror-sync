@@ -46,12 +46,18 @@ add_line() {
 }
 
 # Record the added lines and added file names of `git diff <args>`.
+#
+# Added and removed lines are marked with ">" and "<" instead of "+" and "-",
+# so an added line whose text starts with "++ " can never be mistaken for the
+# "+++ <path>" file header.
 add_diff() {
-  git diff -U0 --no-color --no-ext-diff --no-prefix "$@" |
+  git diff -U0 --no-color --no-ext-diff --no-prefix \
+    --output-indicator-new='>' --output-indicator-old='<' \
+    --output-indicator-context='=' "$@" |
     awk -v locations="$locations" -v texts="$texts" '
       /^\+\+\+ / { path = substr($0, 5); next }
       /^@@ / { split($3, range, ","); line = substr(range[1], 2) + 0; next }
-      /^\+/ {
+      /^>/ {
         print path ":" line >> locations
         print substr($0, 2) >> texts
         line++
