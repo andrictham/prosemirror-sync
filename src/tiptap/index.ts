@@ -183,6 +183,44 @@ export type UseSyncOptions = {
   flushOnDestroy?: boolean;
 };
 
+/**
+ * Why the app stopped a document's sync for good.
+ *
+ * - `accessLost`: the backend now rejects this person for the document.
+ * - `identityChanged`: the signed-in identity is no longer the one the editor
+ *   was created under.
+ * - `discarded`: the person chose to leave without saving.
+ */
+export type DocSyncStopReason = "accessLost" | "identityChanged" | "discarded";
+
+// Set in `onCreate`, so only an editor this extension mounted can be stopped.
+const docSyncStoppers = new WeakMap<
+  Editor,
+  (reason: DocSyncStopReason) => void
+>();
+
+/**
+ * Stop syncing the document behind `editor`, permanently.
+ *
+ * After this the provider submits no steps or snapshots, including the flush
+ * it would otherwise run when the editor is destroyed, and removes its
+ * `beforeunload` warning. Local edits stay in the editor state; whether to
+ * keep or drop them is the caller's decision.
+ *
+ * @returns `false` when the provider never mounted `editor`.
+ */
+export function stopDocSync(
+  editor: Editor,
+  reason: DocSyncStopReason,
+): boolean {
+  const stop = docSyncStoppers.get(editor);
+  if (!stop) {
+    return false;
+  }
+  stop(reason);
+  return true;
+}
+
 export function useTiptapSync(
   syncApi: SyncApi,
   id: string,
@@ -294,7 +332,7 @@ export function syncExtension(
   };
   let snapshotTimer: NodeJS.Timeout | undefined;
   const trySubmitSnapshot = (version: number, content: string) => {
-    if (schemaFatal) {
+    if (isSyncStopped()) {
       return;
     }
     if (snapshotTimer) {
@@ -302,7 +340,7 @@ export function syncExtension(
     }
     snapshotTimer = setTimeout(() => {
       snapshotTimer = undefined;
-      if (schemaFatal) {
+      if (isSyncStopped()) {
         return;
       }
       // Snapshots are an optimization over replaying steps, and the next one
@@ -313,7 +351,10 @@ export function syncExtension(
     }, opts?.snapshotDebounceMs ?? SNAPSHOT_DEBOUNCE_MS);
   };
 
-  let schemaFatal = false;
+  // Set once, never cleared: a stopped provider makes no further server calls
+  // for any editor it mounted. "syncFatal" is the terminal failure state.
+  let stopReason: DocSyncStopReason | "syncFatal" | undefined;
+  const isSyncStopped = () => stopReason !== undefined;
   let active: boolean = false;
   let pending:
     | { resolve: () => void; reject: () => void; promise: Promise<void> }
@@ -332,17 +373,25 @@ export function syncExtension(
     resolve();
   }
 
-  function enterTerminalSchemaFailure(error: Error) {
-    schemaFatal = true;
+  function stopSync(reason: DocSyncStopReason | "syncFatal") {
+    if (stopReason !== undefined) {
+      return;
+    }
+    stopReason = reason;
     retry?.cancel();
     if (snapshotTimer) {
       clearTimeout(snapshotTimer);
       snapshotTimer = undefined;
     }
+    // Releasing every subscription also makes `onDestroy` skip its flush.
     for (const subscribed of [...subscriptions.keys()]) {
       releaseEditorResources(subscribed);
     }
     resolvePendingWithoutRetry();
+  }
+
+  function enterTerminalSchemaFailure(error: Error) {
+    stopSync("syncFatal");
     if (opts?.onSyncError) {
       opts.onSyncError(error);
       return;
@@ -420,7 +469,8 @@ export function syncExtension(
       });
     }
     receiveSteps(editor, steps, own.clientIds);
-    if (schemaFatal || editor.isDestroyed || !subscriptions.has(editor)) return;
+    if (isSyncStopped() || editor.isDestroyed || !subscriptions.has(editor))
+      return;
     observe(
       Object.freeze({
         kind: "receive",
@@ -456,7 +506,7 @@ export function syncExtension(
   }
 
   async function trySync(editor: Editor) {
-    if (schemaFatal) {
+    if (isSyncStopped()) {
       return;
     }
     const subscription = subscriptions.get(editor);
@@ -484,7 +534,7 @@ export function syncExtension(
     active = true;
 
     try {
-      if (schemaFatal) {
+      if (isSyncStopped()) {
         return;
       }
       if (
@@ -497,12 +547,12 @@ export function syncExtension(
           initialState,
           opts?.debug,
           readPersistedStep,
-          () => schemaFatal || subscriptions.get(editor) !== subscription,
+          () => isSyncStopped() || subscriptions.get(editor) !== subscription,
           observeSubmission,
           applyConfirmedSteps,
         )
       ) {
-        if (schemaFatal) {
+        if (isSyncStopped()) {
           return;
         }
         const version = collab.getVersion(editor.state);
@@ -517,6 +567,11 @@ export function syncExtension(
         retry?.succeeded();
       }
     } catch (error) {
+      // A request that was in flight when the app stopped sync can still
+      // fail; the app has already decided what that document's fate is.
+      if (stopReason !== undefined && stopReason !== "syncFatal") {
+        return;
+      }
       if (isTerminalSchemaError(error)) {
         enterTerminalSchemaFailure(
           error instanceof Error
@@ -539,7 +594,7 @@ export function syncExtension(
       }
     } finally {
       active = false;
-      if (schemaFatal) {
+      if (isSyncStopped()) {
         resolvePendingWithoutRetry();
       } else if (pending) {
         const { resolve, reject } = pending;
@@ -584,7 +639,7 @@ export function syncExtension(
       const state = editor.state;
       if (
         wasActive &&
-        !schemaFatal &&
+        !isSyncStopped() &&
         opts?.flushOnDestroy !== false &&
         collab.sendableSteps(state)
       ) {
@@ -605,7 +660,8 @@ export function syncExtension(
     onCreate() {
       const editor = this.editor;
       releaseEditorResources(editor);
-      if (schemaFatal) {
+      docSyncStoppers.set(editor, stopSync);
+      if (isSyncStopped()) {
         return;
       }
       pendingSteps?.start(editor, initialState.initialVersion);
@@ -661,7 +717,7 @@ export function syncExtension(
       pendingSteps?.update(this.editor);
     },
     onUpdate() {
-      if (schemaFatal) {
+      if (isSyncStopped()) {
         return;
       }
       void trySync(this.editor);

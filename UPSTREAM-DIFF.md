@@ -379,6 +379,29 @@ our tests are both kept.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
 - **Size:** own files: 1 file, +68. `index.ts`: +15 / -1.
 
+## App-initiated sync stop
+
+- **What:** `stopDocSync(editor, reason)` stops the provider that mounted
+  `editor`, for good, and returns `false` if no provider did.
+  `DocSyncStopReason` is `"accessLost"`, `"identityChanged"` or `"discarded"`.
+  After a stop the provider submits no steps or snapshots, skips the
+  destroy-time flush, cancels its retry timer and removes its `beforeunload`
+  warning. A request already in flight that then fails is not reported. Local
+  edits stay in the editor state. Until the app calls it, nothing changes.
+- **Why:** When an app learns that a document must not be written any more, for
+  example because access was revoked or the signed-in identity changed, it needs
+  to stop sync without destroying the editor, and without the flush sending the
+  edits anyway.
+- **Reused:** The stop builds on the terminal schema-failure path. Its
+  `schemaFatal` flag becomes a `stopReason`, with `"syncFatal"` for the terminal
+  failure, and its teardown moves into a shared `stopSync(reason)` that the
+  terminal failure also calls.
+- **Files:** `src/tiptap/stop-doc-sync.test.ts`, plus the export, the stop state
+  and the `onCreate` registration in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Let the app stop a document's sync.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request.
+- **Size:** own files: 1 file, +171. `index.ts`: +70 / -14.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60
