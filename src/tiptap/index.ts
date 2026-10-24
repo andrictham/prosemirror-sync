@@ -181,6 +181,19 @@ export type UseSyncOptions = {
    * @default true
    */
   flushOnDestroy?: boolean;
+  /**
+   * Classify an error the sync loop raised as terminal: retrying can never
+   * succeed, for example because the server refused the pending steps for
+   * their size or shape. The loop calls this for every error it catches,
+   * including catch-up query failures, so return true only for errors that
+   * are permanent. The debounced snapshot submission is not classified. Return true to enter the provider's terminal state,
+   * which stops watches, snapshot timers, `trySync` retries, and the
+   * post-destroy flush, then reports the error through `onSyncError`.
+   *
+   * `isTerminalError` only stops the `retry` timer and keeps syncing on the
+   * next change. This one stops sync for good, as a schema failure does.
+   */
+  isTerminalSyncError?: (error: Error) => boolean;
 };
 
 /**
@@ -390,7 +403,7 @@ export function syncExtension(
     resolvePendingWithoutRetry();
   }
 
-  function enterTerminalSchemaFailure(error: Error) {
+  function enterTerminalSyncFailure(error: Error) {
     stopSync("syncFatal");
     if (opts?.onSyncError) {
       opts.onSyncError(error);
@@ -573,11 +586,17 @@ export function syncExtension(
         return;
       }
       if (isTerminalSchemaError(error)) {
-        enterTerminalSchemaFailure(
+        enterTerminalSyncFailure(
           error instanceof Error
             ? error
             : new Error("Editor schema rejected structured content"),
         );
+        return;
+      }
+      // A refused submission would otherwise be resent with every later edit
+      // and version update, and each edit typed after it would join it.
+      if (error instanceof Error && opts?.isTerminalSyncError?.(error)) {
+        enterTerminalSyncFailure(error);
         return;
       }
       if (opts?.isTerminalError?.(error)) {
@@ -680,7 +699,7 @@ export function syncExtension(
           editor.view.dispatch(tr);
         } catch (error) {
           if (isTerminalSchemaError(error)) {
-            enterTerminalSchemaFailure(
+            enterTerminalSyncFailure(
               error instanceof Error
                 ? error
                 : new Error("Editor schema rejected structured content"),

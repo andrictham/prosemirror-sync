@@ -402,6 +402,28 @@ our tests are both kept.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
 - **Size:** own files: 1 file, +171. `index.ts`: +70 / -14.
 
+## Terminal sync-error classifier
+
+- **What:** The optional `isTerminalSyncError(error)` classifies an error the
+  sync loop caught as permanent. True enters the terminal state that a schema
+  failure enters: no further watches, snapshots, retries or destroy-time flush,
+  and the error goes to `onSyncError`. Unset, errors are handled as before.
+- **Why:** A submission the server refuses for good, for example for its size or
+  shape, is otherwise resent with every later edit and version update, and each
+  new edit joins it.
+- **Reused:** The terminal state from
+  [App-initiated sync stop](#app-initiated-sync-stop), entered through the
+  existing terminal failure path, renamed `enterTerminalSyncFailure` because it
+  no longer serves only schema failures. The retry option's `isTerminalError`
+  stays as it is: it only stops the retry timer and keeps syncing on the next
+  change.
+- **Files:** `src/tiptap/terminal-sync-error.test.ts`, plus the option and the
+  check in `trySync` in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Classify terminal sync errors.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request,
+  after the app-initiated sync stop.
+- **Size:** own files: 1 file, +122. `index.ts`: +22 / -3.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60
