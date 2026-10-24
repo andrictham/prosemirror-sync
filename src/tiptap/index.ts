@@ -18,6 +18,7 @@ import * as collab from "prosemirror-collab";
 import { Step } from "@tiptap/pm/transform";
 import { useCallback, useMemo, useRef } from "react";
 import type { SyncApi } from "../client/index.js";
+import { matchOwnSteps } from "./own-steps.js";
 import { isTerminalSchemaError } from "./sync-lifecycle.js";
 import {
   createSyncObserver,
@@ -306,7 +307,13 @@ export function syncExtension(
     clientIds: (string | number)[],
   ) {
     const fromVersion = collab.getVersion(editor.state);
-    receiveSteps(editor, steps, clientIds);
+    const own = matchOwnSteps(editor.state, steps, clientIds);
+    if (own.unmatched > 0) {
+      log("Applying steps that share this client ID as another writer's", {
+        unmatched: own.unmatched,
+      });
+    }
+    receiveSteps(editor, steps, own.clientIds);
     if (schemaFatal || editor.isDestroyed || !subscriptions.has(editor)) return;
     observe(
       Object.freeze({
@@ -748,13 +755,14 @@ export async function _flushPendingSteps(
         ),
       );
     } else {
+      const steps = result.steps.map((step) =>
+        Step.fromJSON(state.schema, JSON.parse(step)),
+      );
       state = state.apply(
         collab.receiveTransaction(
           state,
-          result.steps.map((step) =>
-            Step.fromJSON(state.schema, JSON.parse(step)),
-          ),
-          result.clientIds,
+          steps,
+          matchOwnSteps(state, steps, result.clientIds).clientIds,
           { mapSelectionBackward: true },
         ),
       );

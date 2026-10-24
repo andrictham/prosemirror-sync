@@ -189,6 +189,29 @@ our tests are both kept.
   change.
 - **Size:** 1 file, +5 / -1.
 
+## Content-checked own-step confirmation
+
+- **What:** Before collab applies confirmed steps, the provider compares the
+  leading steps that carry its own client ID with its unconfirmed steps, by step
+  JSON (`matchOwnSteps` in `src/tiptap/own-steps.ts`). Only the matching prefix
+  is confirmed. The first mismatching step is relabelled with a client ID that
+  never matches, so collab rebases the remaining local steps over it instead of
+  dropping it. This applies to live catch-up, `needs-rebase` responses and the
+  destroy-time flush. A mismatch is logged when `debug` is set.
+  `src/tiptap/collab-state.ts` reads collab's plugin state and client ID through
+  its plugin key.
+- **Why:** prosemirror-collab counts its own prefix by client ID alone. When two
+  writers share a client ID, for example two tabs restored from one saved
+  session, it drops the other writer's steps from the document and marks local
+  steps as confirmed that the server never received, so the documents diverge
+  and edits are lost. With distinct client IDs the behaviour is unchanged.
+- **Files:** `src/tiptap/own-steps.ts`, `src/tiptap/own-steps.test.ts`,
+  `src/tiptap/collab-state.ts`, plus `applyConfirmedSteps` and the flush's
+  rebase branch in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Confirm own steps by content.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request.
+- **Size:** own files: 3 files, +438. `index.ts`: +13 / -5.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60
@@ -202,6 +225,12 @@ Each commit's own changes to these two files, against its parent:
 | `dde0bd4`      | Bounded history paging                 | +24 / -9   | +5 / -5         |
 | `5580872`      | Flush budget and debug versions        | +12 / -7   | +101 / -1       |
 | merge of 0.2.7 | Keep `isStopped()` beside #281's guard | +1         | test union only |
+
+The table and total above predate the Tiptap seams added after the 0.2.7 merge.
+From
+[Content-checked own-step confirmation](#content-checked-own-step-confirmation)
+on, each section's **Size** line gives its own `index.ts` change, and those
+seams keep their tests in their own files.
 
 ## Known departures from AGENTS.md
 
