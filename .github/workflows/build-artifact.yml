@@ -2,6 +2,7 @@ name: Build pinned artifact
 on:
   push:
     branches:
+      - main
       - sync-seams-0.2.6
       - history-paging
       - artifacts/**
@@ -29,7 +30,8 @@ jobs:
         run: git diff --exit-code -- dist
       - name: Publish immutable artifact branch
         if:
-          github.ref == 'refs/heads/sync-seams-0.2.6' || github.ref ==
+          github.ref == 'refs/heads/main' || github.ref ==
+          'refs/heads/sync-seams-0.2.6' || github.ref ==
           'refs/heads/history-paging'
         run: |
           git switch -c "artifacts/${GITHUB_SHA}"

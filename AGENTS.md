@@ -12,7 +12,7 @@ This is a fork of [get-convex/prosemirror-sync](https://github.com/get-convex/pr
 
 ## Branching policy
 
-- `main` is upstream plus our changes, and it is the only long-lived branch.
+- `main` is upstream plus our changes, and it is the only long-lived branch for our work.
 - `upstream-sync` is the only bot-owned branch. The weekly upstream-sync workflow keeps it current by merging main and then upstream into it, with merge commits only, and only ever opens a pull request into main.
 - Work on one working branch at a time. Fast-forward `main` to it once its tests pass and it has been reviewed.
 - Never force-push, and never rebase `main`. Bring in new upstream releases by merging them into `main`.
