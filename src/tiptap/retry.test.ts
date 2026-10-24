@@ -38,6 +38,26 @@ function client(failures: Error[]) {
   return { convex, attempts };
 }
 
+/**
+ * A client whose `submitSteps` runs each script in turn before answering
+ * "synced", and answers "synced" at once after the last one.
+ */
+function scripted(scripts: (() => Promise<void>)[]) {
+  const attempts: number[] = [];
+  const convex = {
+    watchQuery: () => ({
+      localQueryResult: () => 1,
+      onUpdate: () => () => {},
+    }),
+    mutation: async () => {
+      attempts.push(Date.now());
+      await scripts.shift()?.();
+      return { status: "synced" };
+    },
+  } as unknown as ConvexReactClient;
+  return { convex, attempts };
+}
+
 function mount(convex: ConvexReactClient, opts: UseSyncOptions) {
   const initial = EditorState.create({
     schema,
@@ -176,6 +196,49 @@ describe("retry", () => {
     expect(attempts).toEqual([0, 1_000]);
     expect(editor.errors.at(-1)?.message).toContain("Unknown node type");
     editor.destroy();
+  });
+
+  test("does not reset the backoff when a sync stops without confirming", async () => {
+    let releaseSecond!: () => void;
+    const { convex, attempts } = scripted([
+      () => Promise.reject(transient()),
+      () => new Promise<void>((resolve) => (releaseSecond = resolve)),
+      () => Promise.reject(transient()),
+    ]);
+    const editor = mount(convex, { retry: true });
+    editor.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    // The first retry is in flight. Creating the editor again replaces its
+    // subscription, so that sync stops without confirming anything.
+    expect(attempts).toEqual([0, 1_000]);
+    editor.start();
+    releaseSecond();
+    await vi.advanceTimersByTimeAsync(0);
+    // The queued sync for the new subscription fails, and the backoff
+    // continues from 2 seconds instead of starting over.
+    expect(attempts).toEqual([0, 1_000, 1_000]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(attempts).toEqual([0, 1_000, 1_000, 3_000]);
+    expect(collab.sendableSteps(editor.state)).toBeNull();
+    editor.destroy();
+  });
+
+  test("does not schedule a retry once the last editor is destroyed", async () => {
+    let failFirst!: (error: Error) => void;
+    const { convex, attempts } = scripted([
+      () => new Promise<void>((_, reject) => (failFirst = reject)),
+    ]);
+    const editor = mount(convex, { retry: true });
+    editor.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // The destroy-time flush makes the second attempt.
+    editor.destroy();
+    await vi.advanceTimersByTimeAsync(0);
+    failFirst(transient());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toEqual([0, 0]);
+    expect(editor.errors).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   test("keeps one timer when several attempts fail before it fires", async () => {

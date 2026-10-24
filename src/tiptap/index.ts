@@ -144,9 +144,11 @@ export type UseSyncOptions = {
    * Retry sync on a timer after a failed attempt, instead of waiting for the
    * next local change or server update. `true` waits 1, 2, 4, 8 and 16
    * seconds, then every 30 seconds. One timer serves all of this extension's
-   * editors. A successful sync resets the backoff. The timer stops when the
-   * last editor is destroyed, on a terminal schema failure, and on an error
-   * that `isTerminalError` classifies as terminal. Each failure is still
+   * editors. A sync that submits and confirms steps resets the backoff. The
+   * timer stops when the last editor is destroyed, on a terminal schema
+   * failure, and on an error that `isTerminalError` classifies as terminal,
+   * and a failure after the last editor is gone schedules nothing. Each
+   * failure is still
    * reported through `onSyncError`.
    * @default false
    */
@@ -509,8 +511,11 @@ export function syncExtension(
           throw new Error("Synced but still have sendable steps");
         }
         trySubmitSnapshot(version, content);
+        // Only a sync that submitted and confirmed steps resets the backoff.
+        // False also means the editor was destroyed or its subscription
+        // replaced, which says nothing about whether the server is reachable.
+        retry?.succeeded();
       }
-      retry?.succeeded();
     } catch (error) {
       if (isTerminalSchemaError(error)) {
         enterTerminalSchemaFailure(
@@ -522,7 +527,9 @@ export function syncExtension(
       }
       if (opts?.isTerminalError?.(error)) {
         retry?.cancel();
-      } else {
+      } else if (subscriptions.size > 0) {
+        // With no editor left there is nothing to retry; the last destroy
+        // already cancelled the timer.
         retry?.failed();
       }
       if (opts?.onSyncError) {

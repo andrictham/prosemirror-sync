@@ -290,20 +290,23 @@ our tests are both kept.
 
 - **What:** `retry: true` (or `{ initialMs, maxMs }`) retries sync on one timer
   after a failed attempt, waiting 1, 2, 4, 8 and 16 seconds, then 30 seconds
-  between attempts. Success resets the backoff. The timer stops when the last
-  editor is destroyed, on a terminal schema failure, and on an error that the
-  optional `isTerminalError(error)` classifier marks as terminal. Unset or
-  `false`, sync waits for the next local change or server update, as upstream
-  does.
+  between attempts. A sync that submits and confirms steps resets the backoff.
+  One with nothing to send, or one that stops because its editor was destroyed
+  or its subscription replaced, does not. The timer stops when the last editor
+  is destroyed, on a terminal schema failure, and on an error that the optional
+  `isTerminalError(error)` classifier marks as terminal. A failure after the
+  last editor is gone schedules nothing. Unset or `false`, sync waits for the
+  next local change or server update, as upstream does.
 - **Why:** After a transient failure, such as a dropped connection, upstream
   does not try again until something else changes, so unsent edits can wait
   indefinitely. The classifier lets an app stop retrying errors that will never
   succeed without the library knowing the app's error codes.
 - **Files:** `src/tiptap/retry.ts`, `src/tiptap/retry.test.ts`, plus the options
   and the timer calls in `src/tiptap/index.ts`.
-- **Commits:** feat(tiptap): Retry sync after transient failures.
+- **Commits:** feat(tiptap): Retry sync after transient failures. fix(tiptap):
+  Retry only for live, unfinished syncs.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
-- **Size:** own files: 2 files, +245. `index.ts`: +39.
+- **Size:** own files: 2 files, +308. `index.ts`: +39, then +12 / -5 in the fix.
 
 ## Dropped-step reports
 
