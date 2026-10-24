@@ -214,25 +214,30 @@ our tests are both kept.
 ## Content-checked own-step confirmation
 
 - **What:** Before collab applies confirmed steps, the provider compares the
-  leading steps that carry its own client ID with its unconfirmed steps, by step
-  JSON (`matchOwnSteps` in `src/tiptap/own-steps.ts`). Only the matching prefix
-  is confirmed. The first mismatching step is relabelled with a client ID that
-  never matches, so collab rebases the remaining local steps over it instead of
-  dropping it. This applies to live catch-up, `needs-rebase` responses and the
-  destroy-time flush. A mismatch is logged when `debug` is set.
-  `src/tiptap/collab-state.ts` reads collab's plugin state and client ID through
-  its plugin key.
+  leading steps that carry its own client ID with its unconfirmed steps, by
+  structural equality of their `toJSON()` output, ignoring key order and
+  treating an undefined field as missing (`matchOwnSteps` in
+  `src/tiptap/own-steps.ts`). Only the matching prefix is confirmed. The first
+  mismatching step is relabelled with a client ID that never matches, so collab
+  rebases the remaining local steps over it instead of dropping it. This applies
+  to live catch-up, `needs-rebase` responses and the destroy-time flush. A
+  mismatch is logged when `debug` is set. `src/tiptap/collab-state.ts` reads
+  collab's plugin state and client ID through its plugin key.
 - **Why:** prosemirror-collab counts its own prefix by client ID alone. When two
   writers share a client ID, for example two tabs restored from one saved
   session, it drops the other writer's steps from the document and marks local
   steps as confirmed that the server never received, so the documents diverge
-  and edits are lost. With distinct client IDs the behaviour is unchanged.
+  and edits are lost. With distinct client IDs the behaviour is unchanged. The
+  check runs on every received batch, with or without any option set. Tests
+  round-trip replace-around, add-mark, remove-mark and attribute steps through
+  `Step.fromJSON` and through a live synced replay, and none is relabelled.
 - **Files:** `src/tiptap/own-steps.ts`, `src/tiptap/own-steps.test.ts`,
   `src/tiptap/collab-state.ts`, plus `applyConfirmedSteps` and the flush's
   rebase branch in `src/tiptap/index.ts`.
-- **Commits:** feat(tiptap): Confirm own steps by content.
+- **Commits:** feat(tiptap): Confirm own steps by content. fix(tiptap): Compare
+  own steps structurally.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
-- **Size:** own files: 3 files, +438. `index.ts`: +13 / -5.
+- **Size:** own files: 3 files, +599. `index.ts`: +13 / -5.
 
 ## Client ID option
 

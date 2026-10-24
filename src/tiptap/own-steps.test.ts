@@ -13,6 +13,7 @@ import { api } from "../component/_generated/api.js";
 import componentSchema from "../component/schema.js";
 import type { SyncApi } from "../client/index.js";
 import { _flushPendingSteps, syncExtension } from "./index.js";
+import { matchOwnSteps } from "./own-steps.js";
 
 const syncApi = api.lib as unknown as SyncApi;
 const modules = import.meta.glob("../component/**/*.*s");
@@ -127,7 +128,7 @@ function editorFor(
     get state() {
       return state;
     },
-    schema,
+    schema: initial.schema,
     isDestroyed: false,
     view: {
       dispatch(transaction: Transaction) {
@@ -326,5 +327,132 @@ describe("own-step confirmation by content", () => {
     const server = await serverText(t, id);
     expect(server.clientIds).toEqual(["shared", "shared"]);
     expect(server.text).toBe("other tabmine");
+  });
+});
+
+const richSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: {
+      group: "block",
+      content: "text*",
+      marks: "_",
+      attrs: { align: { default: null } },
+      toDOM: () => ["p", 0],
+    },
+    blockquote: {
+      group: "block",
+      content: "block+",
+      toDOM: () => ["blockquote", 0],
+    },
+    text: {},
+  },
+  marks: {
+    strong: { toDOM: () => ["strong", 0] },
+  },
+});
+
+/** One paragraph, "hello", whose first two letters are bold. */
+function richStateAt(version: number, clientID: string | number) {
+  const strong = richSchema.marks.strong.create();
+  const doc = richSchema.node("doc", null, [
+    richSchema.node("paragraph", null, [
+      richSchema.text("he", [strong]),
+      richSchema.text("llo"),
+    ]),
+  ]);
+  return EditorState.create({
+    doc,
+    plugins: [collab.collab({ version, clientID })],
+  });
+}
+
+const richEdits = {
+  ReplaceAroundStep: (state: EditorState) => {
+    const range = state.doc.resolve(1).blockRange(state.doc.resolve(6))!;
+    return state.tr.wrap(range, [{ type: richSchema.nodes.blockquote }]);
+  },
+  AddMarkStep: (state: EditorState) =>
+    state.tr.addMark(3, 6, richSchema.marks.strong.create()),
+  RemoveMarkStep: (state: EditorState) =>
+    state.tr.removeMark(1, 3, richSchema.marks.strong),
+  AttrStep: (state: EditorState) =>
+    state.tr.setNodeAttribute(0, "align", "center"),
+} satisfies Record<string, (state: EditorState) => Transaction>;
+
+describe("own-step content comparison", () => {
+  for (const [stepClass, edit] of Object.entries(richEdits)) {
+    test(`confirms a ${stepClass} that went through Step.fromJSON`, () => {
+      const before = richStateAt(1, "me");
+      const state = before.apply(edit(before));
+      const local = collab.sendableSteps(state)!.steps;
+      expect(local.map((step) => step.constructor.name)).toEqual([stepClass]);
+      const persisted = local.map((step) =>
+        Step.fromJSON(richSchema, JSON.parse(JSON.stringify(step.toJSON()))),
+      );
+
+      expect(matchOwnSteps(state, persisted, ["me"])).toEqual({
+        clientIds: ["me"],
+        confirmed: 1,
+        unmatched: 0,
+      });
+    });
+
+    test(`a synced ${stepClass} replays as confirmed without being submitted again`, async () => {
+      const t = convexTest(componentSchema, modules);
+      const id = `synced-${stepClass}`;
+      const before = richStateAt(1, "me");
+      await t.mutation(api.lib.submitSnapshot, {
+        id,
+        version: 1,
+        content: JSON.stringify(before.doc.toJSON()),
+      });
+      const edited = before.apply(edit(before));
+      const { convex, submitted } = client(t, id);
+      // None of the content-matching options is set, so the replay goes
+      // through the default decoder: Step.fromJSON over the submitted JSON.
+      const editor = editorFor(convex, id, edited);
+      try {
+        editor.start();
+        await vi.waitFor(() => expect(collab.getVersion(editor.state)).toBe(2));
+        expect(collab.sendableSteps(editor.state)).toBeNull();
+        expect(editor.state.doc.toJSON()).toEqual(edited.doc.toJSON());
+        const page = await t.query(api.lib.getSteps, { id, version: 1 });
+        expect(page.clientIds).toEqual(["me"]);
+        // A relabelled replay would rebase the local step over its own copy
+        // and submit it a second time.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(submitted).toEqual([{ clientId: "me", status: "synced" }]);
+        expect(editor.errors).toEqual([]);
+      } finally {
+        editor.destroy();
+      }
+    });
+  }
+
+  test("ignores key order and undefined fields", () => {
+    const state = typeText(stateAt(1, "me"), "hi");
+    const [local] = collab.sendableSteps(state)!.steps;
+    const json = local.toJSON() as Record<string, unknown>;
+    const reordered = Object.fromEntries(
+      [...Object.entries(json), ["structure", undefined]].reverse(),
+    );
+    const decoded = { toJSON: () => reordered } as unknown as Step;
+
+    expect(matchOwnSteps(state, [decoded], ["me"])).toEqual({
+      clientIds: ["me"],
+      confirmed: 1,
+      unmatched: 0,
+    });
+  });
+
+  test("relabels a step under its client ID whose content differs", () => {
+    const state = typeText(stateAt(1, "me"), "hi");
+    const other = collab.sendableSteps(typeText(stateAt(1, "me"), "ho"))!.steps;
+
+    const match = matchOwnSteps(state, other, ["me"]);
+    expect(match.confirmed).toBe(0);
+    expect(match.unmatched).toBe(1);
+    expect(match.clientIds[0]).toBeNaN();
   });
 });
