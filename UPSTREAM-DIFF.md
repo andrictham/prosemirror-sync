@@ -46,6 +46,22 @@ commit's own contribution listed there.
   and `package-lock.json`, which also carry the dependency changes below: 2
   files, +1,889 / -1,226 (the lockfile is +1,860 / -1,210 of that).
 
+## Weekly upstream sync
+
+- **What:** A weekly workflow, also runnable by hand, does nothing when `main`
+  already contains upstream `main`. Otherwise it merges `main` and then upstream
+  `main` into the bot-owned `upstream-sync` branch with merge commits only, runs
+  `npm ci`, `npm test` and `npm run build:artifact`, pushes the branch without
+  force, and opens or updates one pull request into `main` titled "Merge
+  upstream <version>" with each step's result. Conflict markers are committed so
+  the pull request shows them. It never pushes to `main` and never merges.
+- **Why:** New upstream releases arrive as a reviewable merge, as
+  [AGENTS.md](./AGENTS.md) requires, without anyone watching upstream by hand.
+- **Files:** `.github/workflows/upstream-sync.yml`, plus the `upstream-sync`
+  line in `AGENTS.md`.
+- **Upstream status:** Fork-only. Not for upstream.
+- **Size:** 1 file, +126, and 1 line in `AGENTS.md`.
+
 ## Development dependency alignment
 
 - **What:** Raises the BlockNote dev dependencies from 0.51.3 to 0.54.0 and

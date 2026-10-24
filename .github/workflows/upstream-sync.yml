@@ -1,0 +1,126 @@
+name: Sync upstream releases
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_URL: https://github.com/convex/prosemirror-sync.git
+      BRANCH: upstream-sync
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.20.0
+      - run: npm install --global npm@11.19.0
+      - name: Merge main and upstream into the bot branch
+        id: merge
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream main
+          git fetch --no-tags origin
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "main already contains upstream/main; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "upstream-sync[bot]"
+          git config user.email "upstream-sync@users.noreply.github.com"
+          # A long-lived branch: continue it, never recreate or rewrite it.
+          if git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null; then
+            git switch -c "$BRANCH" "origin/$BRANCH"
+          else
+            git switch -c "$BRANCH" origin/main
+          fi
+          log="$RUNNER_TEMP/merge.log"
+          : > "$log"
+          for source in origin/main upstream/main; do
+            if git merge --no-ff --no-edit "$source" >> "$log" 2>&1; then
+              echo "Merged $source cleanly." >> "$log"
+            else
+              conflicts="$(git diff --name-only --diff-filter=U)"
+              printf 'Conflicts merging %s:\n%s\n' "$source" "$conflicts" >> "$log"
+              # Commit the markers so the pull request shows the conflict.
+              git add -A
+              git commit --no-edit -m "Merge $source with unresolved conflicts" \
+                -m "Resolve the committed conflict markers on $BRANCH before merging." \
+                -m "Conflicted files:" -m "$conflicts"
+              echo "conflicts=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          version="$(git show upstream/main:package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install, test and build
+        id: verify
+        if: steps.merge.outputs.skip != 'true'
+        run: |
+          results="$RUNNER_TEMP/results.md"
+          : > "$results"
+          failed=false
+          for step in "npm ci --ignore-scripts" "npm test" "npm run build:artifact"; do
+            if bash -c "$step" > "$RUNNER_TEMP/step.log" 2>&1; then
+              status=passed
+            else
+              status=failed
+              failed=true
+            fi
+            {
+              echo "### \`$step\`: $status"
+              echo
+              echo '```'
+              tail -n 40 "$RUNNER_TEMP/step.log"
+              echo '```'
+              echo
+            } >> "$results"
+          done
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+      - name: Push the bot branch and open or update the pull request
+        if: steps.merge.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.merge.outputs.version }}
+        run: |
+          gh auth setup-git
+          # Ordinary push only: the branch only ever gains merge commits.
+          git push origin "HEAD:refs/heads/$BRANCH"
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            echo "Merges \`main\` and then upstream \`main\` into \`$BRANCH\`. Review and merge by hand; this workflow never merges."
+            echo
+            echo "## Merge"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/merge.log"
+            echo '```'
+            echo
+            echo "## Checks"
+            echo
+            cat "$RUNNER_TEMP/results.md"
+          } > "$body"
+          title="Merge upstream $VERSION"
+          number="$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')"
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title "$title" --body-file "$body"
+          else
+            gh pr create --head "$BRANCH" --base main --title "$title" --body-file "$body"
+          fi
+      - name: Fail when the merge or checks failed
+        if:
+          steps.merge.outputs.conflicts == 'true' || steps.verify.outputs.failed
+          == 'true'
+        run: |
+          echo "Merge conflicts or failed checks; see the pull request."
+          exit 1
