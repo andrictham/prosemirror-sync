@@ -640,7 +640,10 @@ async function doSync(
       version: sendable.version,
       clientId: sendable.clientID,
     });
-    if (isStopped() || editor.isDestroyed) return false;
+    // Destroy may have cleared the schema while the submit was in flight.
+    // onDestroy's flush now owns the unconfirmed steps.
+    if (editor.isDestroyed) return false;
+    if (isStopped()) return false;
     if (result.status === "synced") {
       anyChanges = true;
       // We replay the steps locally to avoid refetching them.
