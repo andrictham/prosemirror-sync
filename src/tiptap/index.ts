@@ -24,6 +24,7 @@ import {
   type PendingSteps,
   type SyncBase,
 } from "./pending-steps.js";
+import { createRetryTimer, type RetryOptions } from "./retry.js";
 import { isTerminalSchemaError } from "./sync-lifecycle.js";
 import {
   createSyncObserver,
@@ -35,6 +36,7 @@ export type {
   SyncObservation,
 } from "./sync-observations.js";
 export type { PendingSteps, StepJSON, SyncBase } from "./pending-steps.js";
+export type { RetryOptions } from "./retry.js";
 
 // How many steps we will attempt to sync in one request.
 const MAX_STEPS_SYNC = 1000;
@@ -130,6 +132,23 @@ export type UseSyncOptions = {
    * isolated and never interrupt sync.
    */
   onBaseChange?: (base: SyncBase, editor: Editor) => void;
+  /**
+   * Retry sync on a timer after a failed attempt, instead of waiting for the
+   * next local change or server update. `true` waits 1, 2, 4, 8 and 16
+   * seconds, then every 30 seconds. One timer serves all of this extension's
+   * editors. A successful sync resets the backoff. The timer stops when the
+   * last editor is destroyed, on a terminal schema failure, and on an error
+   * that `isTerminalError` classifies as terminal. Each failure is still
+   * reported through `onSyncError`.
+   * @default false
+   */
+  retry?: boolean | RetryOptions;
+  /**
+   * Classify a sync error as terminal, so `retry` stops instead of
+   * scheduling another attempt. Sync still runs again on the next local
+   * change or server update.
+   */
+  isTerminalError?: (error: unknown) => boolean;
 };
 
 export function useTiptapSync(
@@ -283,6 +302,7 @@ export function syncExtension(
 
   function enterTerminalSchemaFailure(error: Error) {
     schemaFatal = true;
+    retry?.cancel();
     if (snapshotTimer) {
       clearTimeout(snapshotTimer);
       snapshotTimer = undefined;
@@ -318,6 +338,16 @@ export function syncExtension(
   const restoredEditors = new WeakSet<Editor>();
 
   const pendingSteps = createPendingStepsReporter(opts, log);
+
+  // Retries every subscribed editor, so a StrictMode twin that was destroyed
+  // after failing is not retried.
+  const retry = opts?.retry
+    ? createRetryTimer(opts.retry, () => {
+        for (const editor of [...subscriptions.keys()]) {
+          void trySync(editor);
+        }
+      })
+    : undefined;
 
   const observe = createSyncObserver(
     (event) => opts?.onSyncObservation?.(event),
@@ -437,6 +467,7 @@ export function syncExtension(
         }
         trySubmitSnapshot(version, content);
       }
+      retry?.succeeded();
     } catch (error) {
       if (isTerminalSchemaError(error)) {
         enterTerminalSchemaFailure(
@@ -445,6 +476,11 @@ export function syncExtension(
             : new Error("Editor schema rejected structured content"),
         );
         return;
+      }
+      if (opts?.isTerminalError?.(error)) {
+        retry?.cancel();
+      } else {
+        retry?.failed();
       }
       if (opts?.onSyncError) {
         opts.onSyncError(error as Error);
@@ -482,6 +518,9 @@ export function syncExtension(
       const wasActive = subscriptions.has(editor);
       releaseEditorResources(editor);
       pendingSteps?.stop(editor);
+      if (subscriptions.size === 0) {
+        retry?.cancel();
+      }
       // A snapshot may belong to an editor that's still live, so only cancel
       // it once the last one is gone.
       if (subscriptions.size === 0 && snapshotTimer) {
