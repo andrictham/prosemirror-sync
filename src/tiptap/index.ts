@@ -523,7 +523,23 @@ export function syncExtension(
       return;
     }
     const subscription = subscriptions.get(editor);
-    const serverVersion = subscription?.watch.localQueryResult();
+    let serverVersion: number | null | undefined;
+    try {
+      // Convex rethrows a failed query here, for example once the backend
+      // rejects this person for the document. Most failures are transient,
+      // so with `onSyncError` set, report and wait for the watch's next update
+      // instead of throwing. Without it, the error propagates as before. This
+      // read stays before `active = true` so a throw cannot leave it set.
+      serverVersion = subscription?.watch.localQueryResult();
+    } catch (error) {
+      if (!opts?.onSyncError) {
+        throw error;
+      }
+      reportRecoverable(
+        error instanceof Error ? error : new Error("Sync query failed"),
+      );
+      return;
+    }
     if (serverVersion === undefined) {
       return;
     }

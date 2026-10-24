@@ -424,6 +424,23 @@ our tests are both kept.
   after the app-initiated sync stop.
 - **Size:** own files: 1 file, +122. `index.ts`: +22 / -3.
 
+## Failed latest-version reads
+
+- **What:** `trySync` reads the latest-version watch inside a `try`. When the
+  watch's query has failed and `onSyncError` is set, the error is reported there
+  and this attempt ends, and the watch's next update tries again. Without
+  `onSyncError` the error propagates as before.
+- **Why:** The Convex client rethrows a failed query from `localQueryResult()`,
+  for example once the backend rejects this person for the document. From
+  `trySync` that became an unhandled rejection on every update.
+- **Reused:** The existing `reportRecoverable` path, which `onSyncError` already
+  receives snapshot failures through.
+- **Files:** `src/tiptap/watch-read-failure.test.ts`, plus the read in `trySync`
+  in `src/tiptap/index.ts`.
+- **Commits:** fix(tiptap): Report failed latest-version reads.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request.
+- **Size:** own files: 1 file, +109. `index.ts`: +17 / -1.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60
