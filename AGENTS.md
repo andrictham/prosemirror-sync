@@ -21,11 +21,11 @@ This covers code, comments, tests, fixtures, docs, commit messages and branch na
 
 Workflows in this repository run only on GitHub-hosted runners. Never add a self-hosted runner label.
 
-`scripts/check-sensitive.sh` enforces this. It scans only what differs from upstream: added lines and file names, commit messages and branch names. A pushed range is scanned commit by commit, skipping commits reachable from `upstream/main` when an `upstream` remote is fetched, or else from the base in `fork-base.json`. It checks generic patterns from `.github/sensitive-patterns.txt`, common secret shapes, email addresses, workflow runner labels, gitleaks when installed, and private terms that never live in the repository. Those terms come from `$SENSITIVE_TERMS` or `~/.config/prosemirror-sync/sensitive-terms`, one per line; without them the script warns and checks only the generic patterns.
+`scripts/check-sensitive.sh` enforces this. It scans only what differs from upstream: added lines and file names, commit messages and branch names. A pushed range is scanned commit by commit, skipping commits reachable from `upstream/main` when an `upstream` remote is fetched, or else from the base in `fork-base.json`. It checks generic patterns from `.github/sensitive-patterns.txt`, common secret shapes, email addresses, workflow runner labels, gitleaks when installed, and private terms that never live in the repository. Those terms come from `$SENSITIVE_TERMS`, the file `$SENSITIVE_TERMS_FILE` names, or `~/.config/prosemirror-sync/sensitive-terms`, in that order, one per line. A line is a literal term matched as a whole word, or, when it starts with `re:`, an extended regular expression. Both ignore case, and neither is ever printed. Keep that file private (`chmod 600`). Patterns that would reveal what the terms protect, such as internal ID formats or private tool links, belong there as `re:` lines rather than in the public patterns file. Without any terms, the script warns and checks only the generic patterns.
 
 - Run `git config core.hooksPath .githooks` once per clone. `npm install` does it through the `prepare` script. The `pre-commit` hook scans the staged diff, `commit-msg` the message, and `pre-push` the pushed commits, their messages and the branch name.
 - Never bypass the hooks with `--no-verify`.
-- The `sensitive-content` workflow job runs the same script on every pushed range and pull request, with gitleaks and the private terms from the `SENSITIVE_TERMS` Actions secret or variable.
+- The `sensitive-content` workflow job runs the same script on every pushed range and pull request, with gitleaks and the private terms, `re:` lines included, from the `SENSITIVE_TERMS` Actions secret or variable.
 
 ## Change policy
 

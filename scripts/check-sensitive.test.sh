@@ -140,6 +140,39 @@ git -C "$repo" add notes.txt
 SENSITIVE_TERMS=ZebraFruit expect pass "terms match only whole words" \
   "$repo" scan staged || true
 
+repo=$(new_repo)
+printf 'See TICKET-42 for details\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+SENSITIVE_TERMS='re:ticket-[0-9]+' expect fail \
+  "a re: line matches as a regular expression, ignoring case" \
+  "$repo" scan staged || true
+expect_output "a matched pattern is never printed" lacks "ticket-" || true
+expect_output "the text a pattern matched is never printed" lacks "TICKET-42" ||
+  true
+expect_output "a pattern match reports its location" has "notes.txt:1" || true
+
+repo=$(new_repo)
+printf 'tickets are fine, and so is re:zebrafruit\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+SENSITIVE_TERMS=$'re:ticket-[0-9]+\nre:' expect pass \
+  "a re: pattern does not match unrelated text, and an empty one is ignored" \
+  "$repo" scan staged || true
+
+repo=$(new_repo)
+printf 'nothing here\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+SENSITIVE_TERMS='re:secret(unclosed' expect fail \
+  "an invalid re: pattern fails the scan instead of disabling it" \
+  "$repo" scan staged || true
+expect_output "an invalid pattern is never printed" lacks "unclosed" || true
+
+repo=$(new_repo)
+printf 'Notes about zebrafruit\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+printf 'ZebraFruit\n' >"$work/terms-file"
+SENSITIVE_TERMS_FILE="$work/terms-file" expect fail \
+  "terms are read from SENSITIVE_TERMS_FILE" "$repo" scan staged || true
+
 # --- Upstream merges ------------------------------------------------------
 
 at='@'

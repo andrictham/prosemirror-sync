@@ -1,6 +1,8 @@
 # Extended regular expressions for content that must not be committed.
 # scripts/check-sensitive.sh reads one pattern per line; blank lines and lines
-# starting with # are ignored. Keep every pattern generic.
+# starting with # are ignored. Keep every pattern generic: patterns that would
+# reveal what the private terms protect belong with those terms, as "re:"
+# lines, outside the repository.
 /Users/[A-Za-z]
 /home/[a-z][a-z0-9_-]*/
 /private/(tmp|var)/

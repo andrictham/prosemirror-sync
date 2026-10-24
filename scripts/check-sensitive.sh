@@ -15,9 +15,12 @@
 # content is never scanned. Every mode also checks that workflows use
 # GitHub-hosted runners.
 #
-# Private terms are read from $SENSITIVE_TERMS (newline-separated), or from
-# ~/.config/prosemirror-sync/sensitive-terms. They match whole words,
-# ignoring case, and are never printed. Matches report only their location.
+# Private terms are read from $SENSITIVE_TERMS (newline-separated), from the
+# file $SENSITIVE_TERMS_FILE names, or from
+# ~/.config/prosemirror-sync/sensitive-terms, one per line. A line starting
+# with "re:" is an extended regular expression; any other line is a literal
+# term that matches whole words. Both ignore case. Terms and patterns are
+# never printed: matches report only their location.
 set -euo pipefail
 export LC_ALL=C
 
@@ -211,17 +214,22 @@ load_terms() {
     : >"$scratch/terms.raw"
   fi
   tr -d '\r' <"$scratch/terms.raw" | grep -v '^[[:space:]]*$' \
-    >"$scratch/terms" || true
-  if [ ! -s "$scratch/terms" ]; then
+    >"$scratch/entries" || true
+  # "re:" lines are extended regular expressions; every other line is a
+  # literal term.
+  grep -v '^re:' "$scratch/entries" >"$scratch/terms" || true
+  sed -n 's/^re://p' "$scratch/entries" | grep -v '^$' \
+    >"$scratch/term-patterns" || true
+  if [ ! -s "$scratch/terms" ] && [ ! -s "$scratch/term-patterns" ]; then
     {
       echo "##################################################################"
       echo "WARNING: no private terms loaded. Only generic patterns are checked."
-      echo "Set SENSITIVE_TERMS, or create $terms_file_default"
-      echo "with one term per line."
+      echo "Set SENSITIVE_TERMS or SENSITIVE_TERMS_FILE, or create"
+      echo "$terms_file_default with one term per line."
       echo "##################################################################"
     } >&2
   else
-    echo "sensitive-content: checking $(wc -l <"$scratch/terms" | tr -d ' ') private terms from $source" >&2
+    echo "sensitive-content: checking $(wc -l <"$scratch/terms" | tr -d ' ') private terms and $(wc -l <"$scratch/term-patterns" | tr -d ' ') private patterns from $source" >&2
   fi
 }
 
@@ -234,12 +242,20 @@ report() {
   done
 }
 
-# Run grep over the texts and report every matching line under `what`.
+# Run grep over the texts and report every matching line under `what`. The
+# matched text stays in the scratch directory, and grep's own errors are not
+# shown, since they could quote a private pattern.
 check() {
   local what=$1
   shift
-  local hits="$scratch/hits"
-  if grep -n "$@" "$texts" | cut -d: -f1 >"$hits" && [ -s "$hits" ]; then
+  local hits="$scratch/hits" status=0
+  grep -n "$@" "$texts" >"$scratch/matches" 2>/dev/null || status=$?
+  if [ "$status" -gt 1 ]; then
+    fail "could not check: $what (is every pattern a valid extended regular expression?)"
+    return
+  fi
+  cut -d: -f1 "$scratch/matches" >"$hits"
+  if [ -s "$hits" ]; then
     report "$what" <"$hits"
     failures=$((failures + $(sort -u "$hits" | wc -l)))
   fi
@@ -276,6 +292,9 @@ scan_texts() {
 
   if [ -s "$scratch/terms" ]; then
     check "matches a private term" -w -i -F -f "$scratch/terms"
+  fi
+  if [ -s "$scratch/term-patterns" ]; then
+    check "matches a private pattern" -i -E -f "$scratch/term-patterns"
   fi
 }
 

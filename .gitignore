@@ -16,5 +16,3 @@ react/package.json
 # npm pack output
 *.tgz
 *.tsbuildinfo
-# Private terms for scripts/check-sensitive.sh belong outside the checkout.
-.sensitive-terms

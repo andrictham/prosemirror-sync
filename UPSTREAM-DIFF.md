@@ -71,6 +71,13 @@ commit's own contribution listed there.
     than noreply ones, private terms supplied from outside the repository (whole
     words, ignoring case), and workflow runner labels that are not
     GitHub-hosted. It runs gitleaks when installed.
+  - Private terms come from `SENSITIVE_TERMS`, the file `SENSITIVE_TERMS_FILE`
+    names, or `~/.config/prosemirror-sync/sensitive-terms`. A line starting with
+    `re:` is an extended regular expression, matched ignoring case. The public
+    patterns file keeps only generic shapes, such as home-directory and
+    temporary paths and model names. Patterns that would reveal what the private
+    terms protect live with them as `re:` lines. Neither terms nor patterns are
+    ever printed, and an invalid pattern fails the scan instead of disabling it.
   - A pushed range is scanned one commit at a time, so content a later commit
     removed is still caught. Commits reachable from upstream are skipped: from
     `upstream/main` when an `upstream` remote is fetched, as the workflow does,
@@ -96,11 +103,11 @@ commit's own contribution listed there.
   `.githooks/*`, `.github/sensitive-patterns.txt`,
   `.github/workflows/sensitive-content.yml`, plus the `runs-on` lines of the
   other workflows, the `prepare` and `test:sensitive` scripts in `package.json`,
-  a `.gitignore` entry and `AGENTS.md`.
+  and `AGENTS.md`.
 - **Commits:** ci: Guard against sensitive content. ci: Never cancel a
   sensitive-content run. ci: Read added diff lines unambiguously. ci: Match
   private terms regardless of case. ci: Skip upstream's commits in the scan. ci:
-  Scan every ref in pre-push.
+  Scan every ref in pre-push. ci: Keep private patterns with the private terms.
 - **Upstream status:** Fork-only. Not for upstream. The `runs-on` change touches
   upstream's `test.yml`.
 
