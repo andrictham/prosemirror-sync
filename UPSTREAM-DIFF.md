@@ -17,8 +17,8 @@ commit's own contribution listed there.
 
 ## Fork policy
 
-- **What:** `AGENTS.md` sets the fork's change and branching rules. `CLAUDE.md`
-  points coding agents at it. This file lists every change.
+- **What:** `AGENTS.md` sets the fork's public-repository, change and branching
+  rules. `CLAUDE.md` points coding agents at it. This file lists every change.
 - **Why:** Keeps the fork small, additive and easy to merge with new upstream
   releases.
 - **Files:** `AGENTS.md`, `CLAUDE.md`, `UPSTREAM-DIFF.md`.

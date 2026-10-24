@@ -1,6 +1,25 @@
 # Rules for this fork
 
-This is a fork of [get-convex/prosemirror-sync](https://github.com/get-convex/prosemirror-sync). Every change listed here, with its reason and upstream status, is in [UPSTREAM-DIFF.md](./UPSTREAM-DIFF.md).
+This is a fork of [get-convex/prosemirror-sync](https://github.com/get-convex/prosemirror-sync) maintained by @andrictham. Every change listed here, with its reason and upstream status, is in [UPSTREAM-DIFF.md](./UPSTREAM-DIFF.md).
+
+## Public repository
+
+This repository is public. Never commit any of these:
+
+- product or project names or codenames
+- company names
+- internal IDs, such as work queue, decision record or ticket numbers
+- deployment names or hostnames
+- internal file paths
+- links to private tools, such as document, chat or agent tools
+- email addresses other than a GitHub noreply address
+- model or agent names, except the exact trailer `Co-Authored-By: Claude <noreply@anthropic.com>`
+- secrets, tokens or keys
+- customer or user data
+
+This covers code, comments, tests, fixtures, docs, commit messages and branch names. Use generic wording, such as "an app using this library", and describe every change by its library behaviour only. If something slips in, stop and tell the maintainer. Never rewrite history without the maintainer's approval.
+
+Workflows in this repository run only on GitHub-hosted runners. Never add a self-hosted runner label.
 
 ## Change policy
 
@@ -17,7 +36,7 @@ This is a fork of [get-convex/prosemirror-sync](https://github.com/get-convex/pr
 - Work on one working branch at a time. Fast-forward `main` to it once its tests pass and it has been reviewed.
 - Never force-push, and never rebase `main`. Bring in new upstream releases by merging them into `main`.
 - CI publishes built packages to `artifacts/<source-sha>` branches. Keep each one only while an install pins it, and remove it when that pin moves.
-- Never delete a branch without the owner's approval.
+- The maintainer approves every branch deletion.
 
 ## Installing
 
