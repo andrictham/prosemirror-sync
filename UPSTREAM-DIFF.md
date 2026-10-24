@@ -81,10 +81,11 @@ commit's own contribution listed there.
     file headers only before a file's first hunk, so an added line that starts
     with `++ ` cannot pass for a header.
   - The `pre-commit`, `commit-msg` and `pre-push` hooks in `.githooks` and the
-    `sensitive-content` workflow job all call it. The `prepare` script sets
-    `core.hooksPath` in a local git checkout, and does nothing in CI or outside
-    a checkout. The workflow never cancels a run, and groups runs by commit,
-    because each run scans only its own pushed range.
+    `sensitive-content` workflow job all call it. `pre-push` runs each scan with
+    no standard input, so a scan cannot consume the rest of the pushed refs. The
+    `prepare` script sets `core.hooksPath` in a local git checkout, and does
+    nothing in CI or outside a checkout. The workflow never cancels a run, and
+    groups runs by commit, because each run scans only its own pushed range.
   - `scripts/check-sensitive.test.sh` (`npm run test:sensitive`, also a step of
     the workflow) plants content in throwaway repositories and checks the
     scanner's and hooks' verdicts.
@@ -98,7 +99,8 @@ commit's own contribution listed there.
   a `.gitignore` entry and `AGENTS.md`.
 - **Commits:** ci: Guard against sensitive content. ci: Never cancel a
   sensitive-content run. ci: Read added diff lines unambiguously. ci: Match
-  private terms regardless of case. ci: Skip upstream's commits in the scan.
+  private terms regardless of case. ci: Skip upstream's commits in the scan. ci:
+  Scan every ref in pre-push.
 - **Upstream status:** Fork-only. Not for upstream. The `runs-on` change touches
   upstream's `test.yml`.
 

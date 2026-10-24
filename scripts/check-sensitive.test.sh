@@ -199,5 +199,41 @@ git -C "$repo" commit -q -m "Remove the draft"
 expect fail "content removed later in the range is still scanned" \
   "$repo" scan range fork-tip HEAD || true
 
+# --- Hooks ----------------------------------------------------------------
+
+zero_sha=0000000000000000000000000000000000000000
+
+# Feed ref lines to the pre-push hook on its standard input, as git does.
+push_refs() {
+  printf '%s\n' "$@" | .githooks/pre-push origin "https://example.invalid/fork.git"
+}
+
+repo=$(fork_with_upstream_release)
+git -C "$repo" switch -q -c clean-work
+commit_file "$repo" clean.txt "clean" >/dev/null
+git -C "$repo" switch -q -c leaky-work main
+commit_file "$repo" leak.txt "Ask $planted_email" >/dev/null
+git -C "$repo" switch -q main
+clean_sha=$(git -C "$repo" rev-parse clean-work)
+leaky_sha=$(git -C "$repo" rev-parse leaky-work)
+# The stand-in gitleaks reads standard input, so a scan that inherits the
+# hook's input would swallow the second ref.
+expect fail "pre-push scans every pushed ref, not only the first" "$repo" \
+  push_refs \
+  "refs/heads/clean-work $clean_sha refs/heads/clean-work $zero_sha" \
+  "refs/heads/leaky-work $leaky_sha refs/heads/leaky-work $zero_sha" || true
+expect_output "pre-push reports the second ref's problem" has "leak.txt:1" ||
+  true
+
+printf 'Ask %s\n' "$planted_email" >"$repo/staged.txt"
+git -C "$repo" add staged.txt
+expect fail "pre-commit blocks a staged email address" "$repo" \
+  .githooks/pre-commit || true
+git -C "$repo" reset -q staged.txt
+
+printf 'Ask %s\n' "$planted_email" >"$work/message"
+expect fail "commit-msg blocks an email address in the message" "$repo" \
+  .githooks/commit-msg "$work/message" || true
+
 echo "check-sensitive tests: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
