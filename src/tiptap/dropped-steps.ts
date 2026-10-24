@@ -4,8 +4,8 @@ import type { EditorState } from "@tiptap/pm/state";
 import { getCollabClientID, getCollabState } from "./collab-state.js";
 
 /**
- * Applying confirmed steps lost local edits, or found steps under this
- * editor's client ID that it did not make.
+ * Applying confirmed steps lost local edits, or applied steps under this
+ * editor's client ID as another writer's.
  */
 export type StepsDropped = Readonly<{
   editor: Editor;
@@ -17,11 +17,19 @@ export type StepsDropped = Readonly<{
   /** Unconfirmed local steps that could not be rebased and were discarded. */
   droppedCount: number;
   /**
-   * Confirmed steps that carry this editor's client ID but did not match its
-   * unconfirmed steps. They were applied as another writer's, so nonzero
-   * means another writer shares the client ID.
+   * Confirmed steps that carry this editor's client ID at positions where it
+   * still had unconfirmed steps, from the first one whose content differs.
+   * They were applied as another writer's. Only this count means another
+   * writer shares the client ID.
    */
-  unmatchedCount: number;
+  conflictCount: number;
+  /**
+   * Confirmed steps that carry this editor's client ID beyond the end of its
+   * unconfirmed steps. They were applied as another writer's, which is
+   * expected after resuming from a saved list of pending steps shorter than
+   * what reached the server. Nonzero does not mean the client ID is shared.
+   */
+  beyondSavedCount: number;
 }>;
 
 /**
@@ -48,7 +56,7 @@ export function droppedStepsReport(
   editor: Editor,
   before: EditorState,
   droppedCount: number,
-  unmatchedCount: number,
+  own: Readonly<{ conflictCount: number; beyondSavedCount: number }>,
 ): StepsDropped {
   return Object.freeze({
     editor,
@@ -56,6 +64,7 @@ export function droppedStepsReport(
     version: getCollabState(editor.state).version,
     docBefore: before.doc,
     droppedCount,
-    unmatchedCount,
+    conflictCount: own.conflictCount,
+    beyondSavedCount: own.beyondSavedCount,
   });
 }

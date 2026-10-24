@@ -237,7 +237,7 @@ our tests are both kept.
 - **Commits:** feat(tiptap): Confirm own steps by content. fix(tiptap): Compare
   own steps structurally.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
-- **Size:** own files: 3 files, +599. `index.ts`: +13 / -5.
+- **Size:** own files: 3 files, +646. `index.ts`: +13 / -5.
 
 ## Client ID option
 
@@ -303,22 +303,32 @@ our tests are both kept.
 ## Dropped-step reports
 
 - **What:** The optional `onStepsDropped(event)` callback fires when applying a
-  batch of confirmed steps to a live editor cost local edits. `droppedCount`
-  counts unconfirmed steps that no longer applied after a rebase and were
-  discarded, matched by their origin transaction. `unmatchedCount` counts steps
-  under the editor's client ID that did not match its own, which content-checked
-  confirmation applied as another writer's. The event carries `docBefore`, the
-  document with every local edit, plus the client ID and new version. It is
-  isolated like `onSyncObservation`. The destroy-time flush does not report.
+  batch of confirmed steps to a live editor cost local edits or applied steps
+  under its client ID as another writer's. The event has three counts:
+  - `droppedCount`: unconfirmed steps that no longer applied after a rebase and
+    were discarded, matched by their origin transaction.
+  - `conflictCount`: steps under the editor's client ID, at positions where it
+    still had unconfirmed steps, from the first whose content differs. Only this
+    count means another writer shares the client ID.
+  - `beyondSavedCount`: steps under the editor's client ID past the end of its
+    unconfirmed steps. This is expected when an editor resumes from a saved list
+    of pending steps shorter than what reached the server.
+
+  The event carries `docBefore`, the document with every local edit, plus the
+  client ID and new version. It is isolated like `onSyncObservation`. The
+  destroy-time flush does not report.
+
 - **Why:** prosemirror-collab discards a rebased step that no longer applies
   without telling anyone. An app can keep `docBefore` so the user's edit is not
   lost silently, and can rebuild an editor whose client ID is shared.
 - **Files:** `src/tiptap/dropped-steps.ts`, `src/tiptap/dropped-steps.test.ts`,
   plus the option and `applyConfirmedSteps` in `src/tiptap/index.ts`.
-- **Commits:** feat(tiptap): Report steps dropped by rebase.
+- **Commits:** feat(tiptap): Report steps dropped by rebase. fix(tiptap): Count
+  ID conflicts apart from resumes.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request,
   after content-checked own-step confirmation.
-- **Size:** own files: 2 files, +301. `index.ts`: +33.
+- **Size:** own files: 2 files, +344. `index.ts`: +33, then +10 / -11 in the
+  fix.
 
 ## Optional destroy-time flush
 

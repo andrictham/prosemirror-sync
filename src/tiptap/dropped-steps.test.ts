@@ -149,7 +149,8 @@ describe("onStepsDropped", () => {
         clientID: "me",
         version: 2,
         droppedCount: 1,
-        unmatchedCount: 0,
+        conflictCount: 0,
+        beyondSavedCount: 0,
       });
       expect(events[0].docBefore.textContent).toBe("abcXdef");
       expect(harness.state.doc.textContent).toBe("af");
@@ -211,7 +212,40 @@ describe("onStepsDropped", () => {
         clientID: "shared",
         version: 2,
         droppedCount: 0,
-        unmatchedCount: 1,
+        conflictCount: 1,
+        beyondSavedCount: 0,
+      });
+    } finally {
+      harness.destroy();
+    }
+  });
+
+  test("reports its own steps beyond a shorter saved list apart from conflicts", async () => {
+    const t = convexTest(componentSchema, modules);
+    // Both steps reached the server, but the editor resumes with only the
+    // first one saved as pending.
+    await seed(t, {
+      clientId: "me",
+      change: (state) => {
+        const typed = insertX(state);
+        return typed.apply(typed.tr.insertText("Z", 8));
+      },
+    });
+    const events: StepsDropped[] = [];
+    const harness = mount(t, insertX(stateAt("me")), (event) =>
+      events.push(event),
+    );
+    try {
+      harness.start();
+      await settle(harness, 3);
+      expect(harness.state.doc.textContent).toBe("abcXdefZ");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        clientID: "me",
+        version: 3,
+        droppedCount: 0,
+        conflictCount: 0,
+        beyondSavedCount: 1,
       });
     } finally {
       harness.destroy();

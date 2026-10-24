@@ -16,10 +16,18 @@ export type OwnStepMatch = {
   /** How many leading steps confirm unconfirmed local steps. */
   confirmed: number;
   /**
-   * How many leading steps carry this state's client ID but do not match its
-   * unconfirmed steps. They came from another writer using the same client ID.
+   * How many leading steps carry this state's client ID at positions this
+   * state still has unconfirmed steps for, from the first one whose content
+   * differs. Only another writer using the same client ID produces these.
    */
-  unmatched: number;
+  conflictCount: number;
+  /**
+   * How many leading steps carry this state's client ID beyond the end of its
+   * unconfirmed steps. This is expected when an editor resumes from a saved
+   * list of pending steps that is shorter than what reached the server: the
+   * extra steps were this client's, but the document does not contain them.
+   */
+  beyondSavedCount: number;
 };
 
 /**
@@ -53,11 +61,22 @@ export function matchOwnSteps(
     confirmed++;
   }
   if (confirmed === own) {
-    return { clientIds: [...clientIds], confirmed, unmatched: 0 };
+    return {
+      clientIds: [...clientIds],
+      confirmed,
+      conflictCount: 0,
+      beyondSavedCount: 0,
+    };
   }
   const relabelled = [...clientIds];
   relabelled[confirmed] = NOT_OWN_CLIENT_ID;
-  return { clientIds: relabelled, confirmed, unmatched: own - confirmed };
+  const withinUnconfirmed = Math.min(own, unconfirmed.length);
+  return {
+    clientIds: relabelled,
+    confirmed,
+    conflictCount: withinUnconfirmed - confirmed,
+    beyondSavedCount: own - withinUnconfirmed,
+  };
 }
 
 function sameStep(a: Step, b: Step) {

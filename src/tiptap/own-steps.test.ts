@@ -394,7 +394,8 @@ describe("own-step content comparison", () => {
       expect(matchOwnSteps(state, persisted, ["me"])).toEqual({
         clientIds: ["me"],
         confirmed: 1,
-        unmatched: 0,
+        conflictCount: 0,
+        beyondSavedCount: 0,
       });
     });
 
@@ -442,7 +443,8 @@ describe("own-step content comparison", () => {
     expect(matchOwnSteps(state, [decoded], ["me"])).toEqual({
       clientIds: ["me"],
       confirmed: 1,
-      unmatched: 0,
+      conflictCount: 0,
+      beyondSavedCount: 0,
     });
   });
 
@@ -452,7 +454,33 @@ describe("own-step content comparison", () => {
 
     const match = matchOwnSteps(state, other, ["me"]);
     expect(match.confirmed).toBe(0);
-    expect(match.unmatched).toBe(1);
+    expect(match.conflictCount).toBe(1);
+    expect(match.beyondSavedCount).toBe(0);
     expect(match.clientIds[0]).toBeNaN();
+  });
+
+  test("counts own steps past its unconfirmed ones apart from conflicts", () => {
+    const saved = typeText(stateAt(1, "me"), "a");
+    const sent = typeText(typeText(stateAt(1, "me"), "a"), "b");
+    const steps = collab.sendableSteps(sent)!.steps;
+    expect(steps).toHaveLength(2);
+
+    const match = matchOwnSteps(saved, steps, ["me", "me"]);
+    expect(match.confirmed).toBe(1);
+    expect(match.conflictCount).toBe(0);
+    expect(match.beyondSavedCount).toBe(1);
+    expect(match.clientIds[0]).toBe("me");
+    expect(match.clientIds[1]).toBeNaN();
+  });
+
+  test("counts a conflict and the own steps beyond it separately", () => {
+    const saved = typeText(stateAt(1, "me"), "a");
+    const other = typeText(typeText(stateAt(1, "me"), "x"), "y");
+    const steps = collab.sendableSteps(other)!.steps;
+
+    const match = matchOwnSteps(saved, steps, ["me", "me"]);
+    expect(match.confirmed).toBe(0);
+    expect(match.conflictCount).toBe(1);
+    expect(match.beyondSavedCount).toBe(1);
   });
 });

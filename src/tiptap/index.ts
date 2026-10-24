@@ -159,8 +159,11 @@ export type UseSyncOptions = {
    * Called when applying confirmed steps from the server cost local edits:
    * unconfirmed steps that no longer applied after a rebase were discarded,
    * or steps under this editor's client ID did not match its own and were
-   * applied as another writer's. `docBefore` still holds every local edit,
-   * so the app can keep a copy. Fires at most once per batch of received
+   * applied as another writer's. Of those, only `conflictCount` means another
+   * writer shares the client ID. `beyondSavedCount` is expected after
+   * resuming from a saved list of steps shorter than what reached the server.
+   * `docBefore` still holds every local edit, so the app can keep a copy.
+   * Fires at most once per batch of received
    * steps, only for a live editor. The destroy-time flush does not report.
    * Exceptions are isolated and never interrupt sync.
    */
@@ -406,9 +409,10 @@ export function syncExtension(
     const fromVersion = collab.getVersion(editor.state);
     const before = editor.state;
     const own = matchOwnSteps(editor.state, steps, clientIds);
-    if (own.unmatched > 0) {
+    if (own.conflictCount > 0 || own.beyondSavedCount > 0) {
       log("Applying steps that share this client ID as another writer's", {
-        unmatched: own.unmatched,
+        conflictCount: own.conflictCount,
+        beyondSavedCount: own.beyondSavedCount,
       });
     }
     receiveSteps(editor, steps, own.clientIds);
@@ -425,13 +429,8 @@ export function syncExtension(
     );
     if (opts?.onStepsDropped) {
       const dropped = countDroppedSteps(before, editor.state, own.confirmed);
-      if (dropped > 0 || own.unmatched > 0) {
-        const report = droppedStepsReport(
-          editor,
-          before,
-          dropped,
-          own.unmatched,
-        );
+      if (dropped > 0 || own.conflictCount > 0 || own.beyondSavedCount > 0) {
+        const report = droppedStepsReport(editor, before, dropped, own);
         try {
           opts.onStepsDropped(report);
         } catch (error) {
