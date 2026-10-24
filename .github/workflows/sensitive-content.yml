@@ -1,8 +1,12 @@
 name: Sensitive content
 
+# Each run scans only its own pushed range, so a cancelled run would leave
+# that range unscanned. Never cancel a run in progress. GitHub also cancels a
+# pending run when a newer one joins its group, so group by commit rather than
+# by branch: only a repeat run for the same commit and event waits.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 on:
   push:

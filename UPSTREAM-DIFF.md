@@ -73,7 +73,8 @@ commit's own contribution listed there.
   and the `sensitive-content` workflow job all call it. The `prepare` script
   sets `core.hooksPath` in a local git checkout, and does nothing in CI or
   outside a checkout. Every workflow now pins `ubuntu-24.04` instead of
-  `ubuntu-latest`.
+  `ubuntu-latest`. The workflow never cancels a run, and groups runs by commit,
+  because each run scans only its own pushed range.
 - **Why:** The repository is public, and the rules in `AGENTS.md` need a check
   that runs before content leaves a machine and again in CI.
 - **Files:** `scripts/check-sensitive.sh`, `.githooks/*`,
