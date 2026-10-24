@@ -90,6 +90,17 @@ export type UseSyncOptions = {
    * (`_flushPendingSteps`) are not observed.
    */
   onSyncObservation?: (event: SyncObservation) => void;
+  /**
+   * The collab client ID this editor labels its steps with. By default
+   * prosemirror-collab picks a random one for each editor.
+   *
+   * Set it to resume a saved editing session: pass the client ID the saved
+   * steps were made under, so steps that already reached the server are
+   * recognized as this editor's own and confirmed instead of submitted
+   * again. Two live editors should not share a client ID. If they do, own
+   * steps are still confirmed only when their content matches.
+   */
+  clientID?: string | number;
 };
 
 export function useTiptapSync(
@@ -533,6 +544,7 @@ export function syncExtension(
       return [
         collab.collab({
           version: initialState.initialVersion,
+          clientID: opts?.clientID,
         }),
       ];
     },

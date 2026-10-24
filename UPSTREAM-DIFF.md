@@ -212,6 +212,21 @@ our tests are both kept.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
 - **Size:** own files: 3 files, +438. `index.ts`: +13 / -5.
 
+## Client ID option
+
+- **What:** `UseSyncOptions.clientID` sets the collab client ID the editor
+  labels its steps with. Unset, prosemirror-collab still picks a random one per
+  editor.
+- **Why:** An app that saves unconfirmed steps and restores them through
+  `restoredSteps` must resume under the same client ID. Otherwise steps that
+  already reached the server are not recognized as the editor's own and are
+  submitted a second time.
+- **Files:** `src/tiptap/client-id.test.ts`, plus the option and the
+  `collab.collab` call in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Accept a clientID option.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request.
+- **Size:** own files: 1 file, +192. `index.ts`: +12.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60
