@@ -76,50 +76,66 @@ export function createPendingStepsReporter(
     }
   }
 
+  /** Report whatever changed since the last call. */
+  function update(editor: Editor) {
+    const entry = tracked.get(editor);
+    if (!entry) return;
+    const previous = entry.collab;
+    const next = getCollabState(editor.state);
+    if (next === previous) return;
+    entry.collab = next;
+    if (next.version !== previous.version) {
+      if (onBaseChange) {
+        const doc = nextBase(previous, next, entry.base, editor.state.doc);
+        entry.base = doc;
+        const base = Object.freeze({ version: next.version, doc });
+        isolate("onBaseChange", () => onBaseChange(base, editor));
+      } else {
+        entry.base = undefined;
+      }
+    }
+    if (!onPendingChange) return;
+    if (previous.unconfirmed.length === 0 && next.unconfirmed.length === 0) {
+      return;
+    }
+    const pending =
+      next.unconfirmed.length === 0
+        ? null
+        : Object.freeze({
+            clientID: getCollabClientID(editor.state),
+            version: next.version,
+            steps: Object.freeze(next.unconfirmed.map((u) => toJSON(u.step))),
+          });
+    isolate("onPendingChange", () => onPendingChange(pending, editor));
+  }
+
   return {
-    /** Begin tracking from the editor's current state, without reporting it. */
-    start(editor: Editor) {
-      const collab = getCollabState(editor.state);
-      tracked.set(editor, {
-        collab,
-        base: collab.unconfirmed.length === 0 ? editor.state.doc : undefined,
-      });
+    /**
+     * Begin tracking. Tiptap emits `create` a tick after the editor exists,
+     * and transactions dispatched before then, such as content set right
+     * after construction, are not tracked yet. So the first start compares
+     * against the collab plugin's initial state, at `initialVersion` with
+     * nothing unconfirmed, and reports once whatever changed since. Starting
+     * an editor that is already tracked only reports what changed.
+     */
+    start(editor: Editor, initialVersion: number) {
+      if (!tracked.has(editor)) {
+        tracked.set(editor, {
+          collab: Object.freeze({ version: initialVersion, unconfirmed: [] }),
+          base: undefined,
+        });
+      }
+      update(editor);
+      const entry = tracked.get(editor)!;
+      if (!entry.base && entry.collab.unconfirmed.length === 0) {
+        entry.base = editor.state.doc;
+      }
     },
     stop(editor: Editor) {
       tracked.delete(editor);
     },
     /** Report whatever changed since the last call. Call after each transaction. */
-    update(editor: Editor) {
-      const entry = tracked.get(editor);
-      if (!entry) return;
-      const previous = entry.collab;
-      const next = getCollabState(editor.state);
-      if (next === previous) return;
-      entry.collab = next;
-      if (next.version !== previous.version) {
-        if (onBaseChange) {
-          const doc = nextBase(previous, next, entry.base, editor.state.doc);
-          entry.base = doc;
-          const base = Object.freeze({ version: next.version, doc });
-          isolate("onBaseChange", () => onBaseChange(base, editor));
-        } else {
-          entry.base = undefined;
-        }
-      }
-      if (!onPendingChange) return;
-      if (previous.unconfirmed.length === 0 && next.unconfirmed.length === 0) {
-        return;
-      }
-      const pending =
-        next.unconfirmed.length === 0
-          ? null
-          : Object.freeze({
-              clientID: getCollabClientID(editor.state),
-              version: next.version,
-              steps: Object.freeze(next.unconfirmed.map((u) => toJSON(u.step))),
-            });
-      isolate("onPendingChange", () => onPendingChange(pending, editor));
-    },
+    update,
   };
 }
 

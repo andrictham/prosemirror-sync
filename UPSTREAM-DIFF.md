@@ -268,18 +268,23 @@ our tests are both kept.
     Other changes, such as a rebase, invert the remaining unconfirmed steps from
     the current document.
   - Tracking reads collab's state through its plugin key and runs in the
-    extension's `onTransaction` hook. Nothing is tracked when neither callback
-    is set. The "TODO: verify that restoring local steps works" comment is
-    removed, since a test now covers resuming from these reports.
+    extension's `onTransaction` hook. Tiptap emits `create` a tick after the
+    editor exists, so tracking starts at `onCreate` from collab's initial state
+    (`initialVersion`, nothing unconfirmed), and reports once any change made
+    before then. Nothing is tracked when neither callback is set. The "TODO:
+    verify that restoring local steps works" comment is removed, since a test
+    now covers resuming from these reports.
 - **Why:** An app can keep its own durable copy of unsent edits and resume them
   later with `clientID`, the latest base as `initialContent` and
   `initialVersion`, and the pending steps as `restoredSteps`.
 - **Files:** `src/tiptap/pending-steps.ts`, `src/tiptap/pending-steps.test.ts`,
   plus the options, type exports and hook calls in `src/tiptap/index.ts`.
-- **Commits:** feat(tiptap): Report pending steps.
+- **Commits:** feat(tiptap): Report pending steps. fix(tiptap): Report pending
+  steps made before create.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request,
   after the client ID option.
-- **Size:** own files: 2 files, +562. `index.ts`: +36 / -1.
+- **Size:** own files: 2 files, +614. `index.ts`: +36 / -1, then +3 / -1 in the
+  fix.
 
 ## Sync retry after failures
 

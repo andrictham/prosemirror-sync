@@ -304,6 +304,42 @@ describe("onPendingChange and onBaseChange", () => {
     }
   });
 
+  test("report edits made before create once, at create", async () => {
+    const t = convexTest(componentSchema, modules);
+    await seed(t, "doc");
+    const hold = deferred();
+    const { convex } = client(t, "doc", { hold: () => hold.promise });
+    const reports = recorder(mountBase);
+    const editor = mount(convex, "doc", { clientID: "me", ...reports.options });
+    try {
+      // Tiptap emits create a tick after construction, so these transactions
+      // run before the extension's onCreate.
+      editor.type("early");
+      editor.type("bird");
+      expect(reports.pending).toEqual([]);
+
+      editor.start();
+      expect(reports.pending).toHaveLength(1);
+      expect(reports.pending[0]).toMatchObject({ clientID: "me", version: 1 });
+      expect(reports.pending[0]!.steps).toHaveLength(2);
+      expect(rebuild(mountBase, reports.pending[0]).eq(editor.state.doc)).toBe(
+        true,
+      );
+      expect(reports.bases).toEqual([]);
+
+      // A second create for the same editor reports nothing new.
+      editor.start();
+      expect(reports.pending).toHaveLength(1);
+
+      hold.resolve();
+      await vi.waitFor(() => expect(reports.pending.at(-1)).toBeNull());
+      expect(reports.bases.map((base) => base.version)).toEqual([3]);
+      expect(reports.base.doc.eq(editor.state.doc)).toBe(true);
+    } finally {
+      editor.destroy();
+    }
+  });
+
   test("isolates exceptions thrown by the callbacks", async () => {
     const t = convexTest(componentSchema, modules);
     await seed(t, "doc");

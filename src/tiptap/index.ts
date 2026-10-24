@@ -125,6 +125,8 @@ export type UseSyncOptions = {
    * {@link SyncBase} as `initialContent` and `initialVersion` (its `doc` as
    * JSON and its `version`), and `steps` as `restoredSteps`.
    *
+   * Changes made before Tiptap's deferred `create` event, such as content
+   * set right after the editor is constructed, are reported once at create.
    * Reports stop when the editor is destroyed, so they do not cover the
    * destroy-time flush. Exceptions are isolated and never interrupt sync.
    */
@@ -599,7 +601,7 @@ export function syncExtension(
       if (schemaFatal) {
         return;
       }
-      pendingSteps?.start(editor);
+      pendingSteps?.start(editor, initialState.initialVersion);
       if (initialState.restoredSteps?.length && !restoredEditors.has(editor)) {
         restoredEditors.add(editor);
         log("Restoring local steps", initialState.restoredSteps);
