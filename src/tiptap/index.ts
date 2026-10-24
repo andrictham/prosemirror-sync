@@ -841,6 +841,8 @@ async function doSync(
           .map((step) => readPersistedStep(editor.schema, step)),
         steps.clientIds.slice(skip),
       );
+      // A receive observer may have stopped sync or destroyed the editor.
+      if (isStopped() || editor.isDestroyed) return false;
     }
     // Byte or record limits can stop even a very short nonterminal page.
     // Only the watched head or an empty page establishes completion.
@@ -870,6 +872,9 @@ async function doSync(
       steps,
       sendable.steps.length > steps.length,
     );
+    // The submit observer may have stopped sync, or destroyed the editor,
+    // which hands these steps to onDestroy's flush.
+    if (isStopped() || editor.isDestroyed) return false;
     log("Sending steps", { steps, version: sendable.version });
     const result = await convex.mutation(syncApi.submitSteps, {
       id,

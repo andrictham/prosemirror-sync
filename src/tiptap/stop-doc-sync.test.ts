@@ -158,6 +158,79 @@ describe("stopDocSync", () => {
     first.destroy();
   });
 
+  test("does not submit when a synchronous submit observer stops sync", async () => {
+    const { convex, submissions } = client();
+    const editor = mount(convex, {
+      onSyncObservation: (event) => {
+        if (event.kind === "submit") stopDocSync(event.editor, "accessLost");
+      },
+    });
+    editor.start();
+    editor.type("kept locally");
+    await tick();
+    editor.destroy();
+    await tick();
+
+    expect(submissions).toEqual([]);
+    expect(editor.state.doc.textContent).toBe("kept locally");
+    expect(editor.errors).toEqual([]);
+  });
+
+  test("leaves the steps to the flush when a submit observer destroys the editor", async () => {
+    const { convex, submissions } = client();
+    const editor = mount(convex, {
+      onSyncObservation: (event) => {
+        if (event.kind !== "submit") return;
+        (event.editor as { isDestroyed: boolean }).isDestroyed = true;
+        editor.destroy();
+      },
+    });
+    editor.start();
+    editor.type("hello");
+    await tick();
+
+    // Only the destroy-time flush submits; the sync loop does not send the
+    // same steps a second time.
+    expect(submissions).toHaveLength(1);
+  });
+
+  test("requests no further history page when a receive observer stops sync", async () => {
+    const remote = mount(client().convex);
+    const remoteSteps = remote.state.tr
+      .insertText("remote", 1)
+      .steps.map((step) => JSON.stringify(step.toJSON()));
+    const queries: unknown[] = [];
+    const convex = {
+      watchQuery: () => ({
+        localQueryResult: () => 3,
+        onUpdate: () => () => {},
+      }),
+      // A nonterminal page: version 2 is short of the watched version 3.
+      query: (_reference: unknown, args: unknown) => {
+        queries.push(args);
+        return Promise.resolve({
+          steps: remoteSteps,
+          clientIds: remoteSteps.map(() => "peer"),
+          version: 2,
+        });
+      },
+      mutation: () => new Promise(() => {}),
+    } as unknown as ConvexReactClient;
+    const editor = mount(convex, {
+      onSyncObservation: (event) => {
+        if (event.kind === "receive") stopDocSync(event.editor, "accessLost");
+      },
+    });
+    editor.start();
+    await tick();
+    await tick();
+
+    expect(queries).toHaveLength(1);
+    expect(editor.state.doc.textContent).toBe("remote");
+    expect(editor.errors).toEqual([]);
+    editor.destroy();
+  });
+
   test("leaves sync running when it is never called", async () => {
     const { convex, submissions, answer } = client();
     const editor = mount(convex);

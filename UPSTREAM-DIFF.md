@@ -394,6 +394,11 @@ our tests are both kept.
   destroy-time flush, cancels its retry timer and removes its `beforeunload`
   warning. A request already in flight that then fails is not reported. Local
   edits stay in the editor state. Until the app calls it, nothing changes.
+  - A stop from inside `onSyncObservation` takes effect at once: a `submit`
+    observer that stops sync sends nothing, and a `receive` observer that stops
+    it during catch-up requests no further history page. A `submit` observer
+    that destroys the editor leaves the steps to the destroy-time flush instead
+    of sending them twice.
 - **Why:** When an app learns that a document must not be written any more, for
   example because access was revoked or the signed-in identity changed, it needs
   to stop sync without destroying the editor, and without the flush sending the
@@ -402,11 +407,14 @@ our tests are both kept.
   `schemaFatal` flag becomes a `stopReason`, with `"syncFatal"` for the terminal
   failure, and its teardown moves into a shared `stopSync(reason)` that the
   terminal failure also calls.
-- **Files:** `src/tiptap/stop-doc-sync.test.ts`, plus the export, the stop state
-  and the `onCreate` registration in `src/tiptap/index.ts`.
-- **Commits:** feat(tiptap): Let the app stop a document's sync.
+- **Files:** `src/tiptap/stop-doc-sync.test.ts`, plus the export, the stop
+  state, the `onCreate` registration and the guards after each observation in
+  `doSync` in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Let the app stop a document's sync. fix(tiptap):
+  Honour a stop from a sync observer.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
-- **Size:** own files: 1 file, +171. `index.ts`: +70 / -14.
+- **Size:** own files: 1 file, +171, then +73 in the fix. `index.ts`: +70 / -14,
+  then +5 in the fix.
 
 ## Terminal sync-error classifier
 
