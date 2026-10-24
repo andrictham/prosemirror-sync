@@ -406,9 +406,7 @@ export function syncExtension(
       active = false;
       if (schemaFatal) {
         resolvePendingWithoutRetry();
-        return;
-      }
-      if (pending) {
+      } else if (pending) {
         const { resolve, reject } = pending;
         pending = undefined;
         // Retry every still-subscribed editor that queued — the closure's
