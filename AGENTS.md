@@ -21,6 +21,12 @@ This covers code, comments, tests, fixtures, docs, commit messages and branch na
 
 Workflows in this repository run only on GitHub-hosted runners. Never add a self-hosted runner label.
 
+`scripts/check-sensitive.sh` enforces this. It scans only what differs from upstream: added lines and file names, commit messages and branch names. It checks generic patterns from `.github/sensitive-patterns.txt`, common secret shapes, email addresses, workflow runner labels, gitleaks when installed, and private terms that never live in the repository. Those terms come from `$SENSITIVE_TERMS` or `~/.config/prosemirror-sync/sensitive-terms`, one per line; without them the script warns and checks only the generic patterns.
+
+- Run `git config core.hooksPath .githooks` once per clone. `npm install` does it through the `prepare` script. The `pre-commit` hook scans the staged diff, `commit-msg` the message, and `pre-push` the pushed commits, their messages and the branch name.
+- Never bypass the hooks with `--no-verify`.
+- The `sensitive-content` workflow job runs the same script on every pushed range and pull request, with gitleaks and the private terms from the `SENSITIVE_TERMS` Actions secret or variable.
+
 ## Change policy
 
 - Keep changes small and additive. Put new behaviour in new modules behind optional options or callbacks. When an option is unset, upstream's code paths and defaults behave exactly as before.

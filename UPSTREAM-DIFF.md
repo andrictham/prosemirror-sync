@@ -62,6 +62,28 @@ commit's own contribution listed there.
 - **Upstream status:** Fork-only. Not for upstream.
 - **Size:** 1 file, +126, and 1 line in `AGENTS.md`.
 
+## Sensitive-content guard
+
+- **What:** `scripts/check-sensitive.sh` scans added lines, added file names,
+  commit messages and branch names that differ from upstream for secrets,
+  generic denylist patterns (`.github/sensitive-patterns.txt`), email addresses
+  other than noreply ones, private terms supplied from outside the repository,
+  and workflow runner labels that are not GitHub-hosted. It runs gitleaks when
+  installed. The `pre-commit`, `commit-msg` and `pre-push` hooks in `.githooks`
+  and the `sensitive-content` workflow job all call it. The `prepare` script
+  sets `core.hooksPath` in a local git checkout, and does nothing in CI or
+  outside a checkout. Every workflow now pins `ubuntu-24.04` instead of
+  `ubuntu-latest`.
+- **Why:** The repository is public, and the rules in `AGENTS.md` need a check
+  that runs before content leaves a machine and again in CI.
+- **Files:** `scripts/check-sensitive.sh`, `.githooks/*`,
+  `.github/sensitive-patterns.txt`, `.github/workflows/sensitive-content.yml`,
+  plus the `runs-on` lines of the other workflows, the `prepare` script in
+  `package.json`, a `.gitignore` entry and `AGENTS.md`.
+- **Commits:** ci: Guard against sensitive content.
+- **Upstream status:** Fork-only. Not for upstream. The `runs-on` change touches
+  upstream's `test.yml`.
+
 ## Development dependency alignment
 
 - **What:** Raises the BlockNote dev dependencies from 0.51.3 to 0.54.0 and

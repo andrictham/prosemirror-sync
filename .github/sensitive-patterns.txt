@@ -1,0 +1,11 @@
+# Extended regular expressions for content that must not be committed.
+# scripts/check-sensitive.sh reads one pattern per line; blank lines and lines
+# starting with # are ignored. Keep every pattern generic.
+/Users/[A-Za-z]
+/home/[a-z][a-z0-9_-]*/
+/private/(tmp|var)/
+/var/folders/
+[A-Za-z]:\\Users\\
+Claude (Opus|Sonnet|Haiku|Code)
+(^|[^A-Za-z])(Opus|Sonnet|Haiku) [0-9]
+(^|[^A-Za-z])(GPT-[0-9]|Codex|Gemini [0-9])

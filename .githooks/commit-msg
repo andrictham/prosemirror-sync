@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Block a commit whose message contains sensitive content.
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check-sensitive.sh" message "$1"
