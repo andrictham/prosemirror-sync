@@ -14,8 +14,8 @@
 # checks that workflows use GitHub-hosted runners.
 #
 # Private terms are read from $SENSITIVE_TERMS (newline-separated), or from
-# ~/.config/prosemirror-sync/sensitive-terms. They match case-sensitively on
-# word boundaries and are never printed. Matches report only their location.
+# ~/.config/prosemirror-sync/sensitive-terms. They match whole words,
+# ignoring case, and are never printed. Matches report only their location.
 set -euo pipefail
 export LC_ALL=C
 
@@ -185,7 +185,7 @@ scan_texts() {
   fi
 
   if [ -s "$scratch/terms" ]; then
-    check "matches a private term" -w -F -f "$scratch/terms"
+    check "matches a private term" -w -i -F -f "$scratch/terms"
   fi
 }
 

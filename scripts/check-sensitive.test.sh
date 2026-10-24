@@ -123,5 +123,22 @@ git -C "$repo" add clean.txt
 SENSITIVE_TERMS=zebrafruit expect pass "a clean staged change passes" \
   "$repo" scan staged || true
 
+# --- Private terms -------------------------------------------------------
+
+repo=$(new_repo)
+printf 'Notes about ZEBRAFRUIT\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+SENSITIVE_TERMS=ZebraFruit expect fail "terms match regardless of case" \
+  "$repo" scan staged || true
+expect_output "a matched term is never printed" lacks "ZEBRAFRUIT" || true
+expect_output "a matched term is never printed, in any case" lacks \
+  "ZebraFruit" || true
+
+repo=$(new_repo)
+printf 'zebrafruity and prezebrafruit\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+SENSITIVE_TERMS=ZebraFruit expect pass "terms match only whole words" \
+  "$repo" scan staged || true
+
 echo "check-sensitive tests: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

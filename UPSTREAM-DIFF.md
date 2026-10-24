@@ -67,18 +67,19 @@ commit's own contribution listed there.
 - **What:** `scripts/check-sensitive.sh` scans added lines, added file names,
   commit messages and branch names that differ from upstream for secrets,
   generic denylist patterns (`.github/sensitive-patterns.txt`), email addresses
-  other than noreply ones, private terms supplied from outside the repository,
-  and workflow runner labels that are not GitHub-hosted. It runs gitleaks when
-  installed. The `pre-commit`, `commit-msg` and `pre-push` hooks in `.githooks`
-  and the `sensitive-content` workflow job all call it. The `prepare` script
-  sets `core.hooksPath` in a local git checkout, and does nothing in CI or
-  outside a checkout. Every workflow now pins `ubuntu-24.04` instead of
-  `ubuntu-latest`. The workflow never cancels a run, and groups runs by commit,
-  because each run scans only its own pushed range. Diff lines are read with `>`
-  and `<` as the added and removed markers, so an added line that starts with
-  `++ ` cannot pass for a file header. `scripts/check-sensitive.test.sh`
-  (`npm run test:sensitive`, also a step of the workflow) plants content in
-  throwaway repositories and checks the scanner's and hooks' verdicts.
+  other than noreply ones, private terms supplied from outside the repository
+  (whole words, ignoring case), and workflow runner labels that are not
+  GitHub-hosted. It runs gitleaks when installed. The `pre-commit`, `commit-msg`
+  and `pre-push` hooks in `.githooks` and the `sensitive-content` workflow job
+  all call it. The `prepare` script sets `core.hooksPath` in a local git
+  checkout, and does nothing in CI or outside a checkout. Every workflow now
+  pins `ubuntu-24.04` instead of `ubuntu-latest`. The workflow never cancels a
+  run, and groups runs by commit, because each run scans only its own pushed
+  range. Diff lines are read with `>` and `<` as the added and removed markers,
+  so an added line that starts with `++ ` cannot pass for a file header.
+  `scripts/check-sensitive.test.sh` (`npm run test:sensitive`, also a step of
+  the workflow) plants content in throwaway repositories and checks the
+  scanner's and hooks' verdicts.
 - **Why:** The repository is public, and the rules in `AGENTS.md` need a check
   that runs before content leaves a machine and again in CI.
 - **Files:** `scripts/check-sensitive.sh`, `scripts/check-sensitive.test.sh`,
@@ -87,7 +88,8 @@ commit's own contribution listed there.
   other workflows, the `prepare` and `test:sensitive` scripts in `package.json`,
   a `.gitignore` entry and `AGENTS.md`.
 - **Commits:** ci: Guard against sensitive content. ci: Never cancel a
-  sensitive-content run. ci: Read added diff lines unambiguously.
+  sensitive-content run. ci: Read added diff lines unambiguously. ci: Match
+  private terms regardless of case.
 - **Upstream status:** Fork-only. Not for upstream. The `runs-on` change touches
   upstream's `test.yml`.
 
