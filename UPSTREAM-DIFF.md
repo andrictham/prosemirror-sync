@@ -227,6 +227,33 @@ our tests are both kept.
 - **Upstream status:** Not submitted. Shaped as its own upstream pull request.
 - **Size:** own files: 1 file, +192. `index.ts`: +12.
 
+## Pending-step and base reports
+
+- **What:** Two optional callbacks, isolated from sync like `onSyncObservation`:
+  - `onPendingChange(pending | null, editor)` reports the editor's unconfirmed
+    steps as `{ clientID, version, steps }`, with steps as `Step.toJSON`
+    objects, whenever a transaction replaces the collab plugin's state and
+    something was or is unconfirmed: local edits, restored steps, confirmations
+    and rebases. Steps received while nothing is unconfirmed do not report.
+  - `onBaseChange(base, editor)` reports `{ version, doc }`, the confirmed
+    document without the unconfirmed steps, only when the collab version
+    changes. An own confirmation moves the base forward by the confirmed steps.
+    Other changes, such as a rebase, invert the remaining unconfirmed steps from
+    the current document.
+  - Tracking reads collab's state through its plugin key and runs in the
+    extension's `onTransaction` hook. Nothing is tracked when neither callback
+    is set. The "TODO: verify that restoring local steps works" comment is
+    removed, since a test now covers resuming from these reports.
+- **Why:** An app can keep its own durable copy of unsent edits and resume them
+  later with `clientID`, the latest base as `initialContent` and
+  `initialVersion`, and the pending steps as `restoredSteps`.
+- **Files:** `src/tiptap/pending-steps.ts`, `src/tiptap/pending-steps.test.ts`,
+  plus the options, type exports and hook calls in `src/tiptap/index.ts`.
+- **Commits:** feat(tiptap): Report pending steps.
+- **Upstream status:** Not submitted. Shaped as its own upstream pull request,
+  after the client ID option.
+- **Size:** own files: 2 files, +562. `index.ts`: +36 / -1.
+
 ## Shared Tiptap provider files
 
 `src/tiptap/index.ts` and `src/tiptap/index.test.ts`: 2 files, +384 / -60

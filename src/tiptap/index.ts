@@ -19,6 +19,11 @@ import { Step } from "@tiptap/pm/transform";
 import { useCallback, useMemo, useRef } from "react";
 import type { SyncApi } from "../client/index.js";
 import { matchOwnSteps } from "./own-steps.js";
+import {
+  createPendingStepsReporter,
+  type PendingSteps,
+  type SyncBase,
+} from "./pending-steps.js";
 import { isTerminalSchemaError } from "./sync-lifecycle.js";
 import {
   createSyncObserver,
@@ -29,6 +34,7 @@ export type {
   SyncReceipt,
   SyncObservation,
 } from "./sync-observations.js";
+export type { PendingSteps, StepJSON, SyncBase } from "./pending-steps.js";
 
 // How many steps we will attempt to sync in one request.
 const MAX_STEPS_SYNC = 1000;
@@ -101,6 +107,29 @@ export type UseSyncOptions = {
    * steps are still confirmed only when their content matches.
    */
   clientID?: string | number;
+  /**
+   * Called after a transaction changes the editor's unconfirmed local steps:
+   * local edits, restored steps, confirmations and rebases. `null` means
+   * nothing is left unconfirmed. Steps received from other clients while
+   * nothing is unconfirmed do not report.
+   *
+   * To resume the session later, mount with this `clientID`, the latest
+   * {@link SyncBase} as `initialContent` and `initialVersion` (its `doc` as
+   * JSON and its `version`), and `steps` as `restoredSteps`.
+   *
+   * Reports stop when the editor is destroyed, so they do not cover the
+   * destroy-time flush. Exceptions are isolated and never interrupt sync.
+   */
+  onPendingChange?: (pending: PendingSteps | null, editor: Editor) => void;
+  /**
+   * Called when the collab version changes, with the confirmed document at
+   * the new version: the editor's document without its unconfirmed steps.
+   * The base at mount is the `initialContent` and `initialVersion` the
+   * extension was created with, and is not reported. When one transaction
+   * changes both, this fires before `onPendingChange`. Exceptions are
+   * isolated and never interrupt sync.
+   */
+  onBaseChange?: (base: SyncBase, editor: Editor) => void;
 };
 
 export function useTiptapSync(
@@ -288,6 +317,8 @@ export function syncExtension(
   >();
   const restoredEditors = new WeakSet<Editor>();
 
+  const pendingSteps = createPendingStepsReporter(opts, log);
+
   const observe = createSyncObserver(
     (event) => opts?.onSyncObservation?.(event),
     log,
@@ -450,6 +481,7 @@ export function syncExtension(
       const editor = this.editor;
       const wasActive = subscriptions.has(editor);
       releaseEditorResources(editor);
+      pendingSteps?.stop(editor);
       // A snapshot may belong to an editor that's still live, so only cancel
       // it once the last one is gone.
       if (subscriptions.size === 0 && snapshotTimer) {
@@ -482,9 +514,9 @@ export function syncExtension(
       if (schemaFatal) {
         return;
       }
+      pendingSteps?.start(editor);
       if (initialState.restoredSteps?.length && !restoredEditors.has(editor)) {
         restoredEditors.add(editor);
-        // TODO: verify that restoring local steps works
         log("Restoring local steps", initialState.restoredSteps);
         try {
           const tr = editor.state.tr;
@@ -530,6 +562,9 @@ export function syncExtension(
         beforeUnloadHandlers.set(editor, beforeUnloadHandler);
         window.addEventListener("beforeunload", beforeUnloadHandler);
       }
+    },
+    onTransaction() {
+      pendingSteps?.update(this.editor);
     },
     onUpdate() {
       if (schemaFatal) {
