@@ -23,7 +23,11 @@ import {
   droppedStepsReport,
   type StepsDropped,
 } from "./dropped-steps.js";
-import { matchOwnSteps } from "./own-steps.js";
+import {
+  confirmationBatches,
+  matchOwnSteps,
+  receiveBatch,
+} from "./own-steps.js";
 import {
   createPendingStepsReporter,
   type PendingSteps,
@@ -474,14 +478,23 @@ export function syncExtension(
   ) {
     const fromVersion = collab.getVersion(editor.state);
     const before = editor.state;
-    const own = matchOwnSteps(editor.state, steps, clientIds);
+    const match = matchOwnSteps(editor.state, steps, clientIds);
+    const surplus = receiveSteps(editor, steps, match.clientIds);
+    // Own steps beyond what an earlier batch's rebase left unconfirmed were
+    // applied as another writer's, like steps beyond the saved ones, and
+    // confirmed nothing. Leaving them out of `confirmed` lets the drop count
+    // include the step that rebase dropped.
+    const own = {
+      ...match,
+      confirmed: match.confirmed - surplus,
+      beyondSavedCount: match.beyondSavedCount + surplus,
+    };
     if (own.conflictCount > 0 || own.beyondSavedCount > 0) {
       log("Applying steps that share this client ID as another writer's", {
         conflictCount: own.conflictCount,
         beyondSavedCount: own.beyondSavedCount,
       });
     }
-    receiveSteps(editor, steps, own.clientIds);
     if (isSyncStopped() || editor.isDestroyed || !subscriptions.has(editor))
       return;
     observe(
@@ -921,11 +934,13 @@ function receiveSteps(
   steps: Step[],
   clientIds: (string | number)[],
 ) {
-  editor.view.dispatch(
-    collab.receiveTransaction(editor.state, steps, clientIds, {
-      mapSelectionBackward: true,
-    }),
-  );
+  let surplus = 0;
+  for (const batch of confirmationBatches(editor.state, steps, clientIds)) {
+    const received = receiveBatch(editor.state, batch);
+    surplus += received.surplus;
+    editor.view.dispatch(received.transaction);
+  }
+  return surplus;
 }
 
 // How many consecutive rebase rounds without version progress the post-destroy
@@ -995,14 +1010,10 @@ export async function _flushPendingSteps(
       const steps = result.steps.map((step) =>
         Step.fromJSON(state.schema, JSON.parse(step)),
       );
-      state = state.apply(
-        collab.receiveTransaction(
-          state,
-          steps,
-          matchOwnSteps(state, steps, result.clientIds).clientIds,
-          { mapSelectionBackward: true },
-        ),
-      );
+      const { clientIds } = matchOwnSteps(state, steps, result.clientIds);
+      for (const batch of confirmationBatches(state, steps, clientIds)) {
+        state = state.apply(receiveBatch(state, batch).transaction);
+      }
     }
     rebases = collab.getVersion(state) > sendable.version ? 0 : rebases + 1;
   }

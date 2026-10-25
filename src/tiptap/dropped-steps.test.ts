@@ -160,6 +160,45 @@ describe("onStepsDropped", () => {
     }
   });
 
+  test("reports a local step dropped before its own steps confirm", async () => {
+    const t = convexTest(componentSchema, modules);
+    const deletion = (state: EditorState) => state.apply(state.tr.delete(2, 6));
+    await seed(t, { clientId: "other", change: deletion });
+    // Two local inserts: "X" inside the deleted range, then "Y" at the end.
+    const local = insertX(stateAt("me")).apply(
+      insertX(stateAt("me")).tr.insertText("Y", 8),
+    );
+    // Another copy of "me" lost "X" to the deletion too, then landed "Y"
+    // and one more step this row never saved.
+    const [deleted] = collab.sendableSteps(deletion(stateAt("other")))!.steps;
+    let copy = local.apply(
+      collab.receiveTransaction(local, [deleted], ["other"]),
+    );
+    copy = copy.apply(copy.tr.insertText("Q", copy.doc.content.size - 1));
+    await t.mutation(api.lib.submitSteps, {
+      id: "doc",
+      version: 2,
+      clientId: "me",
+      steps: stepsJSON(copy),
+    });
+    const events: StepsDropped[] = [];
+    const harness = mount(t, local, (event) => events.push(event));
+    try {
+      harness.start();
+      await settle(harness, 4);
+      expect(harness.state.doc.textContent).toBe("afYQ");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        droppedCount: 1,
+        conflictCount: 0,
+        beyondSavedCount: 1,
+      });
+      expect(harness.errors).toEqual([]);
+    } finally {
+      harness.destroy();
+    }
+  });
+
   test("stays quiet for a rebase that keeps every local step", async () => {
     const t = convexTest(componentSchema, modules);
     await seed(t, {

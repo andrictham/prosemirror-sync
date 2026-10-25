@@ -13,7 +13,11 @@ import { api } from "../component/_generated/api.js";
 import componentSchema from "../component/schema.js";
 import type { SyncApi } from "../client/index.js";
 import { _flushPendingSteps, syncExtension } from "./index.js";
-import { matchOwnSteps } from "./own-steps.js";
+import {
+  confirmationBatches,
+  matchOwnSteps,
+  receiveBatch,
+} from "./own-steps.js";
 
 const syncApi = api.lib as unknown as SyncApi;
 const modules = import.meta.glob("../component/**/*.*s");
@@ -482,5 +486,174 @@ describe("own-step content comparison", () => {
     expect(match.confirmed).toBe(0);
     expect(match.conflictCount).toBe(1);
     expect(match.beyondSavedCount).toBe(1);
+  });
+});
+
+/** Insert at the end of the first paragraph. */
+function append(state: EditorState, text: string) {
+  return state.apply(state.tr.insertText(text, state.doc.content.size - 1));
+}
+
+function unconfirmedSteps(state: EditorState) {
+  return collab.sendableSteps(state)?.steps ?? [];
+}
+
+/** Apply a catch-up batch the way the provider does. */
+function catchUp(
+  state: EditorState,
+  steps: Step[],
+  clientIds: (string | number)[],
+) {
+  for (const batch of confirmationBatches(
+    state,
+    steps,
+    matchOwnSteps(state, steps, clientIds).clientIds,
+  )) {
+    state = state.apply(receiveBatch(state, batch).transaction);
+  }
+  return state;
+}
+
+/** Replay steps on a plain state, as the server's document. */
+function serverDoc(steps: Step[], base = stateAt(1, "server")) {
+  let state = base;
+  for (const step of steps) state = state.apply(state.tr.step(step));
+  return state.doc;
+}
+
+describe("own steps anywhere in a catch-up batch", () => {
+  test("a restored step that landed behind a remote step shows once", () => {
+    // Another copy of "me" submitted "a0" after "other" wrote "H", so the
+    // server rebased it.
+    const [heading] = unconfirmedSteps(typeText(stateAt(1, "other"), "H"));
+    const copy = collab.receiveTransaction(
+      typeText(stateAt(1, "me"), "a0"),
+      [heading],
+      ["other"],
+    );
+    const copyState = typeText(stateAt(1, "me"), "a0").apply(copy);
+    const [landed] = unconfirmedSteps(copyState);
+    const steps = [heading, landed];
+
+    // This tab restores the unconfirmed "a0" and catches up.
+    const restored = catchUp(typeText(stateAt(1, "me"), "a0"), steps, [
+      "other",
+      "me",
+    ]);
+
+    expect(restored.doc.textContent).toBe("Ha0");
+    expect(restored.doc.toJSON()).toEqual(serverDoc(steps).toJSON());
+    expect(collab.getVersion(restored)).toBe(3);
+    expect(collab.sendableSteps(restored)).toBeNull();
+  });
+
+  test("a landed step whose saved row was lost in a crash shows once", () => {
+    // The send of "a0" landed after remote "b0" and was rebased, but the
+    // crash dropped the saved row that recorded it. The restored row still
+    // holds "a0" as unconfirmed.
+    const [remote] = unconfirmedSteps(append(stateAt(1, "other"), "b0"));
+    const sent = typeText(stateAt(1, "me"), "a0");
+    const [landed] = unconfirmedSteps(
+      sent.apply(collab.receiveTransaction(sent, [remote], ["other"])),
+    );
+    const steps = [remote, landed];
+
+    const restored = catchUp(typeText(stateAt(1, "me"), "a0"), steps, [
+      "other",
+      "me",
+    ]);
+
+    expect(restored.doc.toJSON()).toEqual(serverDoc(steps).toJSON());
+    expect(restored.doc.textContent).toBe("b0a0");
+    expect(collab.sendableSteps(restored)).toBeNull();
+  });
+
+  test("own steps at the front still confirm before remote steps", () => {
+    const mine = typeText(stateAt(1, "me"), "a0");
+    const [own] = unconfirmedSteps(mine);
+    const [remote] = unconfirmedSteps(
+      append(typeText(stateAt(1, "x"), "a0"), "R"),
+    ).slice(1);
+    const steps = [own, remote];
+
+    const caughtUp = catchUp(mine, steps, ["me", "other"]);
+
+    expect(caughtUp.doc.textContent).toBe("a0R");
+    expect(collab.getVersion(caughtUp)).toBe(3);
+    expect(collab.sendableSteps(caughtUp)).toBeNull();
+  });
+
+  test("own steps interleaved with remote steps confirm in order", () => {
+    const local = append(typeText(stateAt(1, "me"), "o1"), "o2");
+    const [r1] = unconfirmedSteps(typeText(stateAt(1, "other"), "R1"));
+    // The other copy of "me" sends o1 after R1, then o2 after R2.
+    let copy = local.apply(collab.receiveTransaction(local, [r1], ["other"]));
+    const [o1] = unconfirmedSteps(copy);
+    copy = copy.apply(collab.receiveTransaction(copy, [o1], ["me"]));
+    const r2 = unconfirmedSteps(
+      append(
+        stateAt(1, "other").apply(stateAt(1, "other").tr.step(r1).step(o1)),
+        "R2",
+      ),
+    ).at(-1)!;
+    copy = copy.apply(collab.receiveTransaction(copy, [r2], ["other"]));
+    const [o2] = unconfirmedSteps(copy);
+    const steps = [r1, o1, r2, o2];
+
+    const restored = catchUp(local, steps, ["other", "me", "other", "me"]);
+
+    expect(restored.doc.toJSON()).toEqual(serverDoc(steps).toJSON());
+    expect(restored.doc.textContent).toBe("R1o1R2o2");
+    expect(collab.getVersion(restored)).toBe(5);
+    expect(collab.sendableSteps(restored)).toBeNull();
+  });
+
+  test("an own step past the unconfirmed ones is applied as remote", () => {
+    const local = typeText(stateAt(1, "me"), "a0");
+    const [heading] = unconfirmedSteps(typeText(stateAt(1, "other"), "H"));
+    const copy = local.apply(
+      collab.receiveTransaction(local, [heading], ["other"]),
+    );
+    const [landed] = unconfirmedSteps(copy);
+    const extra = unconfirmedSteps(append(copy, "b1")).at(-1)!;
+    const steps = [heading, landed, extra];
+
+    const match = matchOwnSteps(local, steps, ["other", "me", "me"]);
+    expect(match.clientIds[2]).toBeNaN();
+    expect(match.confirmed).toBe(1);
+    expect(match.conflictCount).toBe(0);
+    expect(match.beyondSavedCount).toBe(1);
+
+    const restored = catchUp(local, steps, ["other", "me", "me"]);
+    expect(restored.doc.toJSON()).toEqual(serverDoc(steps).toJSON());
+    expect(collab.sendableSteps(restored)).toBeNull();
+  });
+
+  test("an unconfirmed step dropped by an earlier batch does not hide server steps", () => {
+    const base = EditorState.create({
+      doc: schema.node("doc", null, [
+        schema.node("paragraph", null, [schema.text("abcd")]),
+      ]),
+      plugins: [collab.collab({ version: 1, clientID: "me" })],
+    });
+    // Two local inserts: "X" between b and c, then "Y" at the end.
+    const local = append(base.apply(base.tr.insertText("X", 3)), "Y");
+    expect(unconfirmedSteps(local)).toHaveLength(2);
+    // Another writer deletes "bc", which drops the local "X" in the rebase.
+    const [deletion] = unconfirmedSteps(base.apply(base.tr.delete(2, 4)));
+    // The other copy of "me" lost "X" the same way, landed "Y" after the
+    // deletion, then one more step this row never saved.
+    const copy = local.apply(
+      collab.receiveTransaction(local, [deletion], ["other"]),
+    );
+    expect(unconfirmedSteps(copy)).toHaveLength(1);
+    const [first, second] = unconfirmedSteps(append(copy, "Q"));
+    const steps = [deletion, first, second];
+
+    const restored = catchUp(local, steps, ["other", "me", "me"]);
+
+    expect(restored.doc.toJSON()).toEqual(serverDoc(steps, base).toJSON());
+    expect(collab.getVersion(restored)).toBe(4);
+    expect(collab.sendableSteps(restored)).toBeNull();
   });
 });

@@ -329,11 +329,34 @@ Line ranges for `src/tiptap/index.ts`: options type 45-197, `stopDocSync`
 - **Change:** `keepsRemainder` also requires the new unconfirmed count to equal
   the remainder. Otherwise the base is rebuilt by inverting the unconfirmed
   steps.
-- **Commits:** `<SHA>` fix(tiptap): Confirm only our own remaining steps.
+- **Commits:** `a5e0c4f` fix(tiptap): Confirm only our own remaining steps.
 - **Touches:** `src/tiptap/pending-steps.ts` `keepsRemainder`;
   `src/tiptap/pending-steps.test.ts`.
 - **Verdict:** yes, but only together with entry 8; it corrects the base
   reports of entry 10 under content-checked confirmation.
+- **Upstream PR:** none yet.
+
+### 19. Own steps anywhere in a catch-up batch
+
+- **Problem:** Follow-up to entry 8. `matchOwnSteps` counted own steps only at
+  the front of a catch-up batch. When another copy of this client ID had landed
+  our steps behind a remote step, the landed copy was applied as remote and the
+  restored unconfirmed step was rebased on top, so the typing showed twice.
+- **Change:** Own-client-ID steps anywhere in the batch confirm our unconfirmed
+  steps in order; the steps between them stay remote. Content is compared only
+  before the first remote step, because a server rebase changes it.
+  `confirmationBatches` splits the result into runs that each start with own
+  steps, and the provider passes each run to `receiveTransaction` in turn, so
+  collab's own leading-run confirmation does the matching. `receiveBatch`
+  relabels own steps beyond the unconfirmed steps an earlier batch's rebase
+  left, so collab applies them instead of skipping them; they count as
+  `beyondSavedCount`.
+- **Commits:** `<SHA>` fix(tiptap): Find own steps anywhere in catch-up.
+- **Touches:** `src/tiptap/own-steps.ts`, `src/tiptap/own-steps.test.ts`,
+  `src/tiptap/dropped-steps.test.ts`; `src/tiptap/index.ts`
+  `applyConfirmedSteps`, `receiveSteps` and the rebase branch of
+  `_flushPendingSteps`.
+- **Verdict:** yes, but only together with entry 8.
 - **Upstream PR:** none yet.
 
 ### Known departures from AGENTS.md

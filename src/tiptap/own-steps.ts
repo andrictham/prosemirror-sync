@@ -1,4 +1,5 @@
-import type { EditorState } from "@tiptap/pm/state";
+import type { EditorState, Transaction } from "@tiptap/pm/state";
+import * as collab from "prosemirror-collab";
 import type { Step } from "@tiptap/pm/transform";
 import { getCollabClientID, getCollabState } from "./collab-state.js";
 
@@ -8,21 +9,20 @@ const NOT_OWN_CLIENT_ID = Number.NaN;
 
 export type OwnStepMatch = {
   /**
-   * The client IDs to pass to `receiveTransaction`. The first own-labelled
-   * step whose content does not match is relabelled, so collab confirms only
-   * the matching prefix and rebases the rest instead of dropping it.
+   * The client IDs to pass to `confirmationBatches`. Own-labelled steps that
+   * do not confirm an unconfirmed step are relabelled as remote.
    */
   clientIds: (string | number)[];
-  /** How many leading steps confirm unconfirmed local steps. */
+  /** How many steps confirm unconfirmed local steps. */
   confirmed: number;
   /**
-   * How many leading steps carry this state's client ID at positions this
-   * state still has unconfirmed steps for, from the first one whose content
+   * How many steps carry this state's client ID at positions this state
+   * still has unconfirmed steps for, from the first one whose content
    * differs. Only another writer using the same client ID produces these.
    */
   conflictCount: number;
   /**
-   * How many leading steps carry this state's client ID beyond the end of its
+   * How many steps carry this state's client ID beyond the end of its
    * unconfirmed steps. This is expected when an editor resumes from a saved
    * list of pending steps that is shorter than what reached the server: the
    * extra steps were this client's, but the document does not contain them.
@@ -31,14 +31,23 @@ export type OwnStepMatch = {
 };
 
 /**
- * Check the leading confirmed steps that carry this state's client ID against
- * its unconfirmed steps, by step JSON.
+ * Match the confirmed steps that carry this state's client ID, wherever they
+ * sit in the batch, against its unconfirmed steps in order.
  *
  * prosemirror-collab treats every leading step with its own client ID as one
  * of its unconfirmed steps, without comparing content. When two writers share
  * a client ID, it then drops the other writer's steps from this document and
- * marks local steps as confirmed that the server never received. Confirming
- * only the matching prefix keeps both writers' steps.
+ * marks local steps as confirmed that the server never received. So an own
+ * step before any remote step must also match by step JSON.
+ *
+ * After a remote step the server has rebased our steps, so their content no
+ * longer equals the unconfirmed steps. They are matched by client ID and order
+ * alone. Pass the returned client IDs to `confirmationBatches`, because collab
+ * only confirms a leading run of own steps.
+ *
+ * Matching stops at the first own step that does not match, or that is beyond
+ * the unconfirmed steps. From there every step is relabelled as remote, so
+ * collab rebases the rest instead of dropping it.
  */
 export function matchOwnSteps(
   state: EditorState,
@@ -47,35 +56,33 @@ export function matchOwnSteps(
 ): OwnStepMatch {
   const ownID = getCollabClientID(state);
   const { unconfirmed } = getCollabState(state);
-  let own = 0;
-  // Loose equality, exactly as prosemirror-collab counts its own prefix.
-  while (own < clientIds.length && clientIds[own] == ownID) {
-    own++;
-  }
-  let confirmed = 0;
-  while (
-    confirmed < own &&
-    confirmed < unconfirmed.length &&
-    sameStep(steps[confirmed], unconfirmed[confirmed].step)
-  ) {
-    confirmed++;
-  }
-  if (confirmed === own) {
-    return {
-      clientIds: [...clientIds],
-      confirmed,
-      conflictCount: 0,
-      beyondSavedCount: 0,
-    };
-  }
   const relabelled = [...clientIds];
-  relabelled[confirmed] = NOT_OWN_CLIENT_ID;
-  const withinUnconfirmed = Math.min(own, unconfirmed.length);
+  let confirmed = 0;
+  let sawRemote = false;
+  let stopped = false;
+  let ownAfterStop = 0;
+  for (let i = 0; i < relabelled.length; i++) {
+    // Loose equality, exactly as prosemirror-collab compares client IDs.
+    if (relabelled[i] != ownID) {
+      sawRemote = true;
+    } else if (
+      !stopped &&
+      confirmed < unconfirmed.length &&
+      (sawRemote || sameStep(steps[i], unconfirmed[confirmed].step))
+    ) {
+      confirmed++;
+    } else {
+      stopped = true;
+      ownAfterStop++;
+      relabelled[i] = NOT_OWN_CLIENT_ID;
+    }
+  }
+  const conflictCount = Math.min(ownAfterStop, unconfirmed.length - confirmed);
   return {
     clientIds: relabelled,
     confirmed,
-    conflictCount: withinUnconfirmed - confirmed,
-    beyondSavedCount: own - withinUnconfirmed,
+    conflictCount,
+    beyondSavedCount: ownAfterStop - conflictCount,
   };
 }
 
@@ -114,4 +121,59 @@ function sameJSON(a: unknown, b: unknown): boolean {
     if (!sameJSON(left[key], right[key])) return false;
   }
   return true;
+}
+
+/**
+ * Split relabelled steps into batches for `receiveTransaction`, which confirms
+ * only a leading run of own-labelled steps. Each batch starts with own steps,
+ * if any, and is followed by the remote steps up to the next own one. Apply
+ * the batches in order, each to the state the previous one produced.
+ */
+export function confirmationBatches(
+  state: EditorState,
+  steps: readonly Step[],
+  clientIds: readonly (string | number)[],
+): { steps: Step[]; clientIds: (string | number)[] }[] {
+  const ownID = getCollabClientID(state);
+  const batches: { steps: Step[]; clientIds: (string | number)[] }[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const own = clientIds[i] == ownID;
+    const last = batches.at(-1);
+    if (!last || (own && last.clientIds.at(-1) != ownID)) {
+      batches.push({ steps: [steps[i]], clientIds: [clientIds[i]] });
+    } else {
+      last.steps.push(steps[i]);
+      last.clientIds.push(clientIds[i]);
+    }
+  }
+  return batches;
+}
+
+/**
+ * The transaction that applies one batch from `confirmationBatches` to
+ * `state`, and how many of its own-labelled steps were applied as remote.
+ *
+ * An earlier batch's rebase can drop an unconfirmed step, leaving fewer
+ * unconfirmed steps than the batch's leading own run. prosemirror-collab
+ * would count the surplus as confirmed and skip it, so the document would
+ * miss server content. The surplus is relabelled as remote instead.
+ */
+export function receiveBatch(
+  state: EditorState,
+  batch: { steps: Step[]; clientIds: (string | number)[] },
+): { transaction: Transaction; surplus: number } {
+  const ownID = getCollabClientID(state);
+  const room = getCollabState(state).unconfirmed.length;
+  const clientIds = [...batch.clientIds];
+  let surplus = 0;
+  for (let i = room; i < clientIds.length && clientIds[i] == ownID; i++) {
+    clientIds[i] = NOT_OWN_CLIENT_ID;
+    surplus++;
+  }
+  return {
+    transaction: collab.receiveTransaction(state, batch.steps, clientIds, {
+      mapSelectionBackward: true,
+    }),
+    surplus,
+  };
 }
