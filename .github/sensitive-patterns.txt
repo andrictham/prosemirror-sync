@@ -11,3 +11,11 @@
 Claude (Opus|Sonnet|Haiku|Code)
 (^|[^A-Za-z])(Opus|Sonnet|Haiku) [0-9]
 (^|[^A-Za-z])(GPT-[0-9]|Codex|Gemini [0-9])
+Claude [A-Z][A-Za-z]* [0-9]
+# Model trailers: the scanner drops the one allowed trailer from commit
+# messages before matching, so any other co-author line naming a model fails.
+^[Cc]o-[Aa]uthored-[Bb]y:.*([Cc]laude|GPT|[Gg]emini|[Cc]odex|noreply@anthropic)
+# Agent-session links and session trailers.
+^[A-Za-z]+-[Ss]ession:
+claude\.ai/(code|chat)/
+chatgpt\.com/

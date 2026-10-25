@@ -7,7 +7,8 @@
 #   scripts/check-sensitive.sh message <file>      # a commit message file
 #   scripts/check-sensitive.sh range <base> <head> [branch]
 #                                                  # a pushed range
-#   scripts/check-sensitive.sh tree                # every commit not in upstream
+#   scripts/check-sensitive.sh tree                # the tree diff from upstream
+#   scripts/check-sensitive.sh history             # every commit not in upstream
 #
 # Each mode scans only added lines, added file names, commit messages and the
 # branch name. The range and tree modes scan each commit on its own, and skip
@@ -20,7 +21,12 @@
 # ~/.config/prosemirror-sync/sensitive-terms, one per line. A line starting
 # with "re:" is an extended regular expression; any other line is a literal
 # term that matches whole words. Both ignore case. Terms and patterns are
-# never printed: matches report only their location.
+# never printed. A private match reports only a handle, such as a commit and a
+# count, never a file name or line, because either could reveal the term.
+# Set SENSITIVE_TERMS_REQUIRED=1 to fail when no private terms load, as CI does.
+#
+# Commit authors and committers must use a GitHub noreply address
+# (<id>+<login>@users.noreply.github.com) or a listed bot address.
 set -euo pipefail
 export LC_ALL=C
 
@@ -29,14 +35,20 @@ cd "$root"
 patterns_file=.github/sensitive-patterns.txt
 terms_file_default="$HOME/.config/prosemirror-sync/sensitive-terms"
 allowed_trailer='Co-Authored-By: Claude <noreply@anthropic.com>'
+noreply_email='^[0-9]+\+[^@]+@users\.noreply\.github\.com$'
+allowed_bot_emails=('41898282+github-actions[bot]@users.noreply.github.com')
 zero_sha=0000000000000000000000000000000000000000
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 locations="$scratch/locations"
 texts="$scratch/texts"
+scopes="$scratch/scopes"
 : >"$locations"
 : >"$texts"
+: >"$scopes"
+# The handle a private match is reported under; see report_private.
+scope="staged changes"
 failures=0
 
 fail() {
@@ -48,6 +60,7 @@ fail() {
 add_line() {
   printf '%s\n' "$1" >>"$locations"
   printf '%s\n' "$2" >>"$texts"
+  printf '%s\n' "$scope" >>"$scopes"
 }
 
 # Record the added lines of a patch read from stdin, ordinary or combined.
@@ -59,7 +72,8 @@ add_line() {
 # A combined diff line counts as added only when it is new against every
 # parent, so content a merge brings in from one side is not recorded again.
 record_patch() {
-  awk -v locations="$locations" -v texts="$texts" '
+  awk -v locations="$locations" -v texts="$texts" -v scopes="$scopes" \
+    -v scope="$scope" '
     /^diff / { header = 1; next }
     header && /^\+\+\+ / { path = substr($0, 5); next }
     /^@@/ {
@@ -87,6 +101,7 @@ record_patch() {
       if (added) {
         print path ":" line >> locations
         print substr($0, columns + 1) >> texts
+        print scope >> scopes
       }
       if (!removed) line++
     }
@@ -140,13 +155,32 @@ add_message() {
   done <"$file"
 }
 
-# Record the message of every commit `git rev-list <args>` selects.
+# Fail unless an email is a GitHub noreply address or a listed bot address.
+# The address itself is not printed.
+check_email() {
+  local where=$1 email=$2 bot
+  if printf '%s\n' "$email" | grep -q -E "$noreply_email"; then
+    return
+  fi
+  for bot in "${allowed_bot_emails[@]}"; do
+    [ "$email" = "$bot" ] && return
+  done
+  fail "$where email is not a GitHub noreply address"
+}
+
+# Record the message, and check the author and committer emails, of every
+# commit `git rev-list <args>` selects.
 add_commit_messages() {
-  local commit
+  local commit short author committer
   for commit in $(git rev-list --reverse "$@"); do
+    short=$(git rev-parse --short "$commit")
+    scope="commit $short"
     git log -1 --format=%B "$commit" >"$scratch/message"
-    add_message "commit $(git rev-parse --short "$commit") message" \
-      "$scratch/message"
+    add_message "commit $short message" "$scratch/message"
+    author=$(git log -1 --format=%ae "$commit")
+    committer=$(git log -1 --format=%ce "$commit")
+    check_email "commit $short author" "$author"
+    check_email "commit $short committer" "$committer"
   done
 }
 
@@ -157,6 +191,7 @@ add_commits() {
   local commit parents empty_tree
   empty_tree=$(git hash-object -t tree /dev/null)
   for commit in $(git rev-list --reverse "$@"); do
+    scope="commit $(git rev-parse --short "$commit")"
     parents=$(git rev-list --parents -n 1 "$commit" | wc -w)
     case $parents in
       1) add_diff "$empty_tree" "$commit" ;;
@@ -221,6 +256,10 @@ load_terms() {
   sed -n 's/^re://p' "$scratch/entries" | grep -v '^$' \
     >"$scratch/term-patterns" || true
   if [ ! -s "$scratch/terms" ] && [ ! -s "$scratch/term-patterns" ]; then
+    if [ "${SENSITIVE_TERMS_REQUIRED:-}" = 1 ]; then
+      echo "sensitive-content: no private terms loaded, and SENSITIVE_TERMS_REQUIRED=1; failing" >&2
+      exit 2
+    fi
     {
       echo "##################################################################"
       echo "WARNING: no private terms loaded. Only generic patterns are checked."
@@ -242,12 +281,25 @@ report() {
   done
 }
 
-# Run grep over the texts and report every matching line under `what`. The
-# matched text stays in the scratch directory, and grep's own errors are not
-# shown, since they could quote a private pattern.
+# Report private matches by handle and count only, such as
+# "commit abc1234: 2 line(s) match a private term". A file name or path:line
+# could itself contain the term, or point a reader at the line that does.
+report_private() {
+  local what=$1 line
+  sort -un | while IFS= read -r line; do
+    sed -n "${line}p" "$scopes"
+  done | uniq -c | while read -r count handle; do
+    printf '%s\n' "sensitive-content: $handle: $count line(s) $what" >&2
+  done
+}
+
+# Run grep over the texts and report every matching line under `what`, with
+# `reporter` (report or report_private). The matched text stays in the scratch
+# directory, and grep's own errors are not shown, since they could quote a
+# private pattern.
 check() {
-  local what=$1
-  shift
+  local reporter=$1 what=$2
+  shift 2
   local hits="$scratch/hits" status=0
   grep -n "$@" "$texts" >"$scratch/matches" 2>/dev/null || status=$?
   if [ "$status" -gt 1 ]; then
@@ -256,13 +308,13 @@ check() {
   fi
   cut -d: -f1 "$scratch/matches" >"$hits"
   if [ -s "$hits" ]; then
-    report "$what" <"$hits"
+    "$reporter" "$what" <"$hits"
     failures=$((failures + $(sort -u "$hits" | wc -l)))
   fi
 }
 
 scan_texts() {
-  check "possible secret" -E \
+  check report "possible secret" -E \
     -e 'ghp_[A-Za-z0-9]{36}' \
     -e 'gh[ousr]_[A-Za-z0-9]{36}' \
     -e 'github_pat_[A-Za-z0-9_]{22,}' \
@@ -291,10 +343,10 @@ scan_texts() {
   fi
 
   if [ -s "$scratch/terms" ]; then
-    check "matches a private term" -w -i -F -f "$scratch/terms"
+    check report_private "match a private term" -w -i -F -f "$scratch/terms"
   fi
   if [ -s "$scratch/term-patterns" ]; then
-    check "matches a private pattern" -i -E -f "$scratch/term-patterns"
+    check report_private "match a private pattern" -i -E -f "$scratch/term-patterns"
   fi
 }
 
@@ -331,11 +383,13 @@ gitleaks_scan() {
 mode=${1:-}
 case $mode in
   staged)
+    scope="staged changes"
     add_diff --cached
     gitleaks_scan git --pre-commit --staged .
     ;;
   message)
     [ $# -eq 2 ] || { echo "usage: $0 message <file>" >&2; exit 2; }
+    scope="commit message"
     add_message "commit message" "$2"
     gitleaks_scan stdin <"$2"
     ;;
@@ -353,6 +407,7 @@ case $mode in
     upstream=$(upstream_ref)
     add_commits "$base..$head" --not "$upstream"
     if [ -n "${4:-}" ]; then
+      scope="branch name"
       add_line "branch name" "$4"
     fi
     gitleaks_scan git --log-opts="$base..$head --not $upstream" .
@@ -361,13 +416,22 @@ case $mode in
     # The fork's current tree against the upstream it last merged, plus every
     # fork commit message.
     upstream=$(upstream_ref)
+    scope="tree"
     add_diff "$(git merge-base "$upstream" HEAD)" HEAD
     add_commit_messages HEAD --not "$upstream"
+    scope="branch name"
     add_line "branch name" "$(git rev-parse --abbrev-ref HEAD)"
     gitleaks_scan git --log-opts="HEAD --not $upstream" .
     ;;
+  history)
+    # Every fork commit on its own, so content a later commit removed is
+    # still found: it stays in the published history.
+    upstream=$(upstream_ref)
+    add_commits HEAD --not "$upstream"
+    gitleaks_scan git --log-opts="HEAD --not $upstream" .
+    ;;
   *)
-    sed -n '5,10p' "$0" >&2
+    sed -n '5,11p' "$0" >&2
     exit 2
     ;;
 esac

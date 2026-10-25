@@ -54,14 +54,21 @@ jobs:
 
       # Only the pushed range is scanned, so older history does not fail
       # every run. Private terms come from a secret, or a variable when no
-      # secret is set; without either, only generic patterns are checked.
+      # secret is set. Without either the scan fails rather than checking only
+      # generic patterns. GitHub withholds secrets from pull requests opened
+      # from other forks, so those fail until a maintainer pushes the branch
+      # into this repository.
       - name: Scan the pushed range
         env:
-          SENSITIVE_TERMS:
-            ${{ secrets.SENSITIVE_TERMS || vars.SENSITIVE_TERMS }}
+          SENSITIVE_TERMS_REQUIRED: "1"
+          SENSITIVE_TERMS: ${{ secrets.SENSITIVE_TERMS }}
           BASE:
             ${{ github.event_name == 'pull_request' &&
             github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.sha }}
+          # A pull request's github.sha is GitHub's synthetic merge commit,
+          # whose author is not a noreply address; scan the real head.
+          HEAD:
+            ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.head.sha || github.sha }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
         run: scripts/check-sensitive.sh range "$BASE" "$HEAD" "$BRANCH"

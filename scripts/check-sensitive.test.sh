@@ -26,7 +26,7 @@ export PATH="$work/bin:$PATH"
 export GIT_CONFIG_GLOBAL="$work/gitconfig"
 export GIT_CONFIG_NOSYSTEM=1
 git config --global user.name "Test"
-git config --global user.email "test@users.noreply.github.com"
+git config --global user.email "1+test@users.noreply.github.com"
 git config --global init.defaultBranch main
 
 passed=0
@@ -98,6 +98,22 @@ expect_output() {
   return 1
 }
 
+# Like expect, for an exact exit status.
+# Usage: expect_status <status> <name> <repo> <command...>
+expect_status() {
+  local want=$1 name=$2 repo=$3 status=0
+  shift 3
+  (cd "$repo" && "$@") </dev/null >"$output" 2>&1 || status=$?
+  if [ "$status" -eq "$want" ]; then
+    passed=$((passed + 1))
+    return 0
+  fi
+  failed=$((failed + 1))
+  echo "not ok - $name: expected exit $want, got exit $status" >&2
+  sed 's/^/    /' "$output" >&2
+  return 1
+}
+
 scan() { scripts/check-sensitive.sh "$@"; }
 
 # --- Diff parsing ---------------------------------------------------------
@@ -106,6 +122,13 @@ repo=$(new_repo)
 printf 'first\n++ zebrafruit here\n' >"$repo/notes.txt"
 git -C "$repo" add notes.txt
 SENSITIVE_TERMS=zebrafruit expect fail "an added line starting with ++ is scanned" \
+  "$repo" scan staged || true
+
+# A public pattern match reports its location; a private one never does.
+repo=$(new_repo)
+printf 'first\n++ /var/%s/x\n' folders >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+expect fail "an added ++ line matching a public pattern fails" \
   "$repo" scan staged || true
 expect_output "an added line starting with ++ reports its own path" has \
   "notes.txt:2" || true
@@ -149,7 +172,33 @@ SENSITIVE_TERMS='re:ticket-[0-9]+' expect fail \
 expect_output "a matched pattern is never printed" lacks "ticket-" || true
 expect_output "the text a pattern matched is never printed" lacks "TICKET-42" ||
   true
-expect_output "a pattern match reports its location" has "notes.txt:1" || true
+expect_output "a private match reports a handle and a count" has \
+  "staged changes: 1 line(s) match a private pattern" || true
+expect_output "a private match never reports its path" lacks "notes.txt" ||
+  true
+
+repo=$(new_repo)
+commit_file "$repo" docs/zebrafruit-notes.md "nothing here" "Add notes" \
+  >/dev/null
+SENSITIVE_TERMS=zebrafruit expect fail "a private term in a file name fails" \
+  "$repo" scan range HEAD~1 HEAD || true
+expect_output "a file name that matches a private term is never printed" \
+  lacks "zebrafruit-notes" || true
+expect_output "a file-name match reports its commit and a count" has \
+  "commit $(git -C "$repo" rev-parse --short HEAD): 1 line(s) match a private term" ||
+  true
+
+repo=$(new_repo)
+printf 'nothing here\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+SENSITIVE_TERMS_REQUIRED=1 expect_status 2 \
+  "SENSITIVE_TERMS_REQUIRED fails when no private terms load" \
+  "$repo" scan staged || true
+SENSITIVE_TERMS=zebrafruit SENSITIVE_TERMS_REQUIRED=1 expect pass \
+  "SENSITIVE_TERMS_REQUIRED passes once terms load" "$repo" scan staged ||
+  true
+expect pass "without SENSITIVE_TERMS_REQUIRED, missing terms only warn" \
+  "$repo" scan staged || true
 
 repo=$(new_repo)
 printf 'tickets are fine, and so is re:zebrafruit\n' >"$repo/notes.txt"
@@ -231,6 +280,81 @@ git -C "$repo" rm -q draft.txt
 git -C "$repo" commit -q -m "Remove the draft"
 expect fail "content removed later in the range is still scanned" \
   "$repo" scan range fork-tip HEAD || true
+
+# --- Commit identities and trailers ---------------------------------------
+
+repo=$(new_repo)
+base=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" -c user.email="$planted_email" commit -q --allow-empty -m "Work"
+expect fail "an author email other than a noreply address fails" \
+  "$repo" scan range "$base" HEAD || true
+expect_output "the author email is reported without the address" has \
+  "author email is not a GitHub noreply address" || true
+expect_output "the author address is never printed" lacks "$planted_email" ||
+  true
+
+repo=$(new_repo)
+base=$(git -C "$repo" rev-parse HEAD)
+GIT_COMMITTER_EMAIL="test@users.noreply.github.com" \
+  git -C "$repo" commit -q --allow-empty -m "Work"
+expect fail "a noreply address without a numeric ID fails for the committer" \
+  "$repo" scan range "$base" HEAD || true
+expect_output "the committer is reported" has \
+  "committer email is not a GitHub noreply address" || true
+
+repo=$(new_repo)
+base=$(git -C "$repo" rev-parse HEAD)
+bot_email="41898282+github-actions[bot]${at}users.noreply.github.com"
+git -C "$repo" -c user.email="$bot_email" commit -q --allow-empty -m "Work"
+expect pass "a listed bot address passes" "$repo" scan range "$base" HEAD ||
+  true
+
+coauthor="Co-Authored-By"
+model="Claude"
+anthropic_noreply="<noreply${at}anthropic.com>"
+
+# Commit an empty change with the given message and scan just that commit.
+expect_message() {
+  local want=$1 name=$2 message=$3 repo base
+  repo=$(new_repo)
+  base=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" commit -q --allow-empty -m "Work" -m "$message"
+  expect "$want" "$name" "$repo" scan range "$base" HEAD
+}
+
+expect_message pass "the exact allowed trailer passes" \
+  "$coauthor: $model $anthropic_noreply" || true
+expect_message fail "a trailer naming a model version fails" \
+  "$coauthor: $model Example 9.9 $anthropic_noreply" || true
+expect_message fail "a trailer with extra text before the address fails" \
+  "$coauthor: $model (1M context) $anthropic_noreply" || true
+expect_message fail "a trailer that differs only in case fails" \
+  "co-authored-by: $model $anthropic_noreply" || true
+expect_message fail "a trailer naming another model fails" \
+  "$coauthor: GPT""-9 <bot${at}example.invalid>" || true
+expect_message fail "an agent-session trailer fails" \
+  "${model}-Session: abc123" || true
+expect_message fail "an agent-session link fails" \
+  "See https://claude"".ai/code/session_abc" || true
+expect_message fail "a chat link fails" \
+  "See https://chat""gpt.com/c/abc" || true
+
+# --- History mode ---------------------------------------------------------
+
+repo=$(fork_with_upstream_release)
+git -C "$repo" merge -q --no-edit upstream-release
+expect pass "history passes a clean fork and skips upstream's commits" \
+  "$repo" scan history || true
+
+repo=$(new_repo)
+commit_file "$repo" draft.txt "Ask $planted_email" >/dev/null
+git -C "$repo" rm -q draft.txt
+git -C "$repo" commit -q -m "Remove the draft"
+commit_file "$repo" clean.txt "clean" >/dev/null
+expect fail "history finds content an older commit added and removed" \
+  "$repo" scan history || true
+expect_output "history reports the older commit's line" has "draft.txt:1" ||
+  true
 
 # --- Hooks ----------------------------------------------------------------
 
