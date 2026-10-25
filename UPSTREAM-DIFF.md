@@ -313,10 +313,27 @@ Line ranges for `src/tiptap/index.ts`: options type 45-197, `stopDocSync`
   tail, so step counts can add up while the content is wrong.
 - **Change:** `fetchSteps` checks that every record starts where the previous
   one ended and throws the existing `Missing steps` error otherwise. No option.
-- **Commits:** `<SHA>` fix(sync): Refuse gaps between step records.
+- **Commits:** `b743c3b` fix(sync): Refuse gaps between step records.
 - **Touches:** `src/component/lib.ts` `fetchSteps` (234-257);
   `src/component/lib.paging.test.ts`.
 - **Verdict:** yes. Small and generic, in the same pull request as entry 3.
+- **Upstream PR:** none yet.
+
+### 18. Own-confirmation check for base reports
+
+- **Problem:** Follow-up to entry 8. `onBaseChange` read a version move of k
+  steps as confirmation of the first k unconfirmed steps. When another writer's
+  k steps moved the version instead, the reported base was the old base plus
+  our own steps. An app that restored from that base showed our typing twice
+  and lost the other writer's.
+- **Change:** `keepsRemainder` also requires the new unconfirmed count to equal
+  the remainder. Otherwise the base is rebuilt by inverting the unconfirmed
+  steps.
+- **Commits:** `<SHA>` fix(tiptap): Confirm only our own remaining steps.
+- **Touches:** `src/tiptap/pending-steps.ts` `keepsRemainder`;
+  `src/tiptap/pending-steps.test.ts`.
+- **Verdict:** yes, but only together with entry 8; it corrects the base
+  reports of entry 10 under content-checked confirmation.
 - **Upstream PR:** none yet.
 
 ### Known departures from AGENTS.md

@@ -174,7 +174,8 @@ function nextBase(
 
 /**
  * Whether `next` confirmed the first `confirmed` unconfirmed steps of
- * `previous` and kept the rest unchanged, possibly followed by new steps.
+ * `previous` and kept exactly the rest unchanged. A version move by another
+ * writer's steps leaves all of ours unconfirmed, so the counts differ.
  */
 function keepsRemainder(
   previous: CollabPluginState,
@@ -183,7 +184,7 @@ function keepsRemainder(
 ) {
   if (confirmed <= 0 || confirmed > previous.unconfirmed.length) return false;
   const remaining = previous.unconfirmed.length - confirmed;
-  if (next.unconfirmed.length < remaining) return false;
+  if (next.unconfirmed.length !== remaining) return false;
   for (let i = 0; i < remaining; i++) {
     if (next.unconfirmed[i] !== previous.unconfirmed[confirmed + i]) {
       return false;

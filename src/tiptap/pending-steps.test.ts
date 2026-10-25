@@ -232,6 +232,47 @@ describe("onPendingChange and onBaseChange", () => {
     }
   });
 
+  test("do not take another client's equal step count as our confirmation", async () => {
+    const t = convexTest(componentSchema, modules);
+    await seed(t, "doc");
+    const hold = deferred();
+    const { convex } = client(t, "doc", {
+      hold: (call) => (call === 2 ? hold.promise : Promise.resolve()),
+    });
+    const reports = recorder(mountBase);
+    const editor = mount(convex, "doc", { clientID: "me", ...reports.options });
+    try {
+      editor.start();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Another client's one step lands while our one step is unsent.
+      const other = EditorState.create({
+        doc: emptyDoc,
+        plugins: [collab.collab({ version: 1, clientID: "other" })],
+      });
+      await t.mutation(api.lib.submitSteps, {
+        id: "doc",
+        version: 1,
+        clientId: "other",
+        steps: collab
+          .sendableSteps(other.apply(other.tr.insertText("theirs", 1)))!
+          .steps.map((step) => JSON.stringify(step.toJSON())),
+      });
+      editor.type("mine");
+      await vi.waitFor(() => expect(collab.getVersion(editor.state)).toBe(2));
+      expect(reports.bases.at(-1)!.version).toBe(2);
+      expect(reports.base.doc.textContent).toBe("theirs");
+      expect(
+        rebuild(reports.base, reports.pending.at(-1)!).eq(editor.state.doc),
+      ).toBe(true);
+
+      hold.resolve();
+      await vi.waitFor(() => expect(reports.pending.at(-1)).toBeNull());
+      expect(reports.base.doc.eq(editor.state.doc)).toBe(true);
+    } finally {
+      editor.destroy();
+    }
+  });
+
   test("report a rebase over another client's steps", async () => {
     const t = convexTest(componentSchema, modules);
     await seed(t, "doc");
