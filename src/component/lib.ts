@@ -247,6 +247,12 @@ async function fetchSteps(ctx: QueryCtx, id: string, afterVersion: number) {
       );
     }
   }
+  for (let i = 1; i < deltas.length; i++) {
+    const start = deltas[i].version - deltas[i].steps.length;
+    if (start !== deltas[i - 1].version) {
+      throw new Error(`Missing steps ${deltas[i - 1].version + 1}...${start}`);
+    }
+  }
   return stepsAndClientIds(deltas);
 }
 

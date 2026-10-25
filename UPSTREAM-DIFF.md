@@ -304,6 +304,21 @@ Line ranges for `src/tiptap/index.ts`: options type 45-197, `stopDocSync`
 - **Verdict:** yes. Small and additive.
 - **Upstream PR:** none yet.
 
+### 17. Gaps between step records
+
+- **Problem:** `fetchSteps` checks only that the first record of a page starts
+  at the requested version. A gap between later records in the same page is
+  joined silently, so clients apply steps against the wrong document. When the
+  gap is shorter than the next record, the next page re-reads that record's
+  tail, so step counts can add up while the content is wrong.
+- **Change:** `fetchSteps` checks that every record starts where the previous
+  one ended and throws the existing `Missing steps` error otherwise. No option.
+- **Commits:** `<SHA>` fix(sync): Refuse gaps between step records.
+- **Touches:** `src/component/lib.ts` `fetchSteps` (234-257);
+  `src/component/lib.paging.test.ts`.
+- **Verdict:** yes. Small and generic, in the same pull request as entry 3.
+- **Upstream PR:** none yet.
+
 ### Known departures from AGENTS.md
 
 Entries 1 to 5 predate `AGENTS.md` and break its change policy. They are listed,

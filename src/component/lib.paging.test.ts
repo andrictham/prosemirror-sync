@@ -344,6 +344,48 @@ describe("bounded history pages", () => {
       t.query(api.lib.getSteps, { id: "gap", version: 1 }),
     ).rejects.toThrow("Missing steps 2...3");
   });
+
+  test("rejects a gap between records in the same page", async () => {
+    const t = setup();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("deltas", {
+        id: "gap",
+        version: 2,
+        clientId: "client",
+        steps: ["a", "b"],
+      });
+      await ctx.db.insert("deltas", {
+        id: "gap",
+        version: 6,
+        clientId: "client",
+        steps: ["e", "f"],
+      });
+    });
+    await expect(
+      t.query(api.lib.getSteps, { id: "gap", version: 0 }),
+    ).rejects.toThrow("Missing steps 3...4");
+  });
+
+  test("rejects a gap shorter than the next record", async () => {
+    const t = setup();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("deltas", {
+        id: "gap",
+        version: 2,
+        clientId: "client",
+        steps: ["a", "b"],
+      });
+      await ctx.db.insert("deltas", {
+        id: "gap",
+        version: 6,
+        clientId: "client",
+        steps: ["d", "e", "f"],
+      });
+    });
+    await expect(
+      t.query(api.lib.getSteps, { id: "gap", version: 0 }),
+    ).rejects.toThrow("Missing steps 3...3");
+  });
 });
 
 describe("bounded history deletion", () => {
