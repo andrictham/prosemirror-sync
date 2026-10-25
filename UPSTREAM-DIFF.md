@@ -32,7 +32,9 @@ commit's own contribution listed there.
   (`scripts/verify-package.mjs`, `npm run build:artifact`), and publishes the
   built `dist` to an immutable `artifacts/<source-sha>` branch. Consumers
   install that artifact commit. `fork-base.json` records the upstream base and
-  the contracts the fork's changes provide.
+  the contracts the fork's changes provide. The build runs with no token; a
+  separate publish job downloads `dist` and passes the token only to its push
+  step.
 - **Why:** The package is installed from GitHub, so it needs a built `dist` that
   nobody pushes by hand.
 - **Files:** `.github/workflows/build-artifact.yml`, `fork-base.json`,
@@ -55,6 +57,10 @@ commit's own contribution listed there.
   force, and opens or updates one pull request into `main` titled "Merge
   upstream <version>" with each step's result. Conflict markers are committed so
   the pull request shows them. It never pushes to `main` and never merges.
+  The merge, install, tests and build run in a job with `permissions: {}` and
+  no persisted credentials, because that code comes from upstream's tree. A
+  second job, which runs no repository code, downloads the merged branch as a
+  git bundle and the logs, and only its push step receives the token.
 - **Why:** New upstream releases arrive as a reviewable merge, as
   [AGENTS.md](./AGENTS.md) requires, without anyone watching upstream by hand.
 - **Files:** `.github/workflows/upstream-sync.yml`, plus the `upstream-sync`
@@ -101,11 +107,29 @@ commit's own contribution listed there.
     the workflow) plants content in throwaway repositories and checks the
     scanner's and hooks' verdicts.
   - Every workflow now pins `ubuntu-24.04` instead of `ubuntu-latest`.
+  - Commit author and committer emails must be GitHub noreply addresses with a
+    numeric ID, or a listed bot address. The address is never printed.
+  - Generic patterns reject any co-author trailer naming a model other than the
+    exact allowed one, model names with a version, agent-session trailers and
+    agent-session links.
+  - A private term or pattern match is reported only as a handle and a count,
+    such as a short commit SHA and "2 line(s) match a private term", never as a
+    file name, path or line.
+  - With `SENSITIVE_TERMS_REQUIRED=1` the scan fails when no private terms load.
+    Both workflows set it; local hooks still only warn.
+  - `history` mode scans every fork commit on its own. The `sensitive-history`
+    workflow runs it weekly and on demand.
+  - Enforcement points: the hooks are an early warning; the `sensitive-content`
+    job is the gate for pushes and pull requests; `sensitive-history` re-checks
+    all fork history. Force-push and deletion rules need a repository ruleset.
+  - History was rewritten once, on 2026-10-25, with the maintainer's approval,
+    to remove disclosed patterns and normalize commit authors and trailers.
 - **Why:** The repository is public, and the rules in `AGENTS.md` need a check
   that runs before content leaves a machine and again in CI.
 - **Files:** `scripts/check-sensitive.sh`, `scripts/check-sensitive.test.sh`,
   `.githooks/*`, `.github/sensitive-patterns.txt`,
-  `.github/workflows/sensitive-content.yml`, plus the `runs-on` lines of the
+  `.github/workflows/sensitive-content.yml`,
+  `.github/workflows/sensitive-history.yml`, plus the `runs-on` lines of the
   other workflows, the `setup:hooks` and `test:sensitive` scripts in
   `package.json`, the install-script check in `scripts/verify-package.mjs`, and
   `AGENTS.md`.
@@ -520,12 +544,19 @@ fixed.
 - **Upstream contract changes in `package.json`:** the `convex` peer minimum is
   raised, and `engines` pins exact Node and npm versions for anyone working in
   the package.
-- **Branching:** `build-artifact.yml` publishes from `sync-seams-0.2.6` and
-  `history-paging`, not from `main`, the only long-lived branch under
-  `AGENTS.md`.
-- **Stale base record:** `fork-base.json` still records upstream 0.2.6 at
-  `4d7b011` under the old `get-convex` URL.
-- **Lint:** `npm run lint` reports three errors that predate the merge.
-  `scripts/verify-package.mjs` uses the `process` and `console` globals without
-  Node globals configured (`no-undef`). `src/tiptap/index.ts` returns inside
-  `trySync`'s `finally` when sync has failed terminally (`no-unsafe-finally`).
+
+Resolved since this list was written: `build-artifact.yml` now builds only
+`main` and `artifacts/**`, and publishes only from `main`; `fork-base.json`
+records upstream 0.2.7 at `6d6009e`; and the three baseline lint errors were
+fixed by "fix(lint): Clear the three baseline lint errors".
+
+## Version-ahead submissions
+
+- **What:** The fork deliberately adds no check to `submitSteps` that rejects
+  steps claiming a version ahead of the stored history. `submitSteps` is
+  unchanged in this respect.
+- **Why:** An app is expected to call the component through its own wrapper
+  mutation, which checks access and rejects version-ahead steps before the
+  component sees them. Keeping that check in the app avoids a second, possibly
+  different, rule inside the component.
+- **Upstream status:** Not applicable; no change.
