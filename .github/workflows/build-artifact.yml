@@ -3,17 +3,19 @@ on:
   push:
     branches:
       - main
-      - sync-seams-0.2.6
-      - history-paging
       - artifacts/**
-permissions:
-  contents: write
+permissions: {}
 jobs:
+  # Runs install, tests and the build with no token: neither the job token nor
+  # a persisted credential is available to repository or dependency code.
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions: {}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.20.0
@@ -28,11 +30,39 @@ jobs:
       - name: Verify committed artifacts
         if: startsWith(github.ref, 'refs/heads/artifacts/')
         run: git diff --exit-code -- dist
-      - name: Publish immutable artifact branch
-        if:
-          github.ref == 'refs/heads/main'
+      - name: Upload the built artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runs no repository code. The token reaches only the push step.
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist
+          path: dist
+      - name: Commit the artifact
         run: |
           git switch -c "artifacts/${GITHUB_SHA}"
           git add -f -- dist
-          git -c user.name='Package build' -c user.email='package-build@users.noreply.github.com' commit -m 'chore(build): Generate pinned package artifacts' -m "Build source ${GITHUB_SHA} with the locked Node, npm and TypeScript toolchain after upstream tests and packed exports pass."
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(build): Generate pinned package artifacts' -m "Build source ${GITHUB_SHA} with the locked Node, npm and TypeScript toolchain after upstream tests and packed exports pass."
+      - name: Publish immutable artifact branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
           git push origin "HEAD:refs/heads/artifacts/${GITHUB_SHA}"
