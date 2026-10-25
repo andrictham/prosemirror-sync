@@ -46,7 +46,7 @@ Workflows that build or test never hold a write token. `build-artifact.yml` and 
 - Do not reformat, rename, or make drive-by edits in upstream files.
 - Give each concern one commit, shaped as a pull request that upstream could take, so it can be rebased onto a new upstream release on its own.
 - Never add application-specific logic. The fork exposes only generic seams; app behaviour lives in the app.
-- Update UPSTREAM-DIFF.md in the same commit as any change it lists.
+- Every fork commit updates its ledger entry in UPSTREAM-DIFF.md in the same commit: an upstream candidate's entry (problem, change, commits, files and functions touched, verdict with reason, upstream PR link), or its line under "Not for upstream". A commit cannot cite its own SHA, so entries cite the commits that introduced the change, and the next commit to touch an entry adds the missing SHA. Ledger-only commits are fork-only.
 
 ## Branching policy
 
