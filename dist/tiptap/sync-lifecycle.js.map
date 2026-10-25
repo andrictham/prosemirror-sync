@@ -1,0 +1,1 @@
+{"version":3,"file":"sync-lifecycle.js","sourceRoot":"","sources":["../../src/tiptap/sync-lifecycle.ts"],"names":[],"mappings":"AAAA,MAAM,UAAU,qBAAqB,CAAC,KAAc;IAClD,IAAI,CAAC,CAAC,KAAK,YAAY,KAAK,CAAC,EAAE,CAAC;QAC9B,OAAO,KAAK,CAAC;IACf,CAAC;IACD,OAAO,CACL,KAAK,CAAC,IAAI,KAAK,yBAAyB;QACxC,iCAAiC,CAAC,IAAI,CAAC,KAAK,CAAC,OAAO,CAAC,CACtD,CAAC;AACJ,CAAC"}
