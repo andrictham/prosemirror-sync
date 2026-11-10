@@ -19,3 +19,6 @@ Claude [A-Z][A-Za-z]* [0-9]
 ^[A-Za-z]+-[Ss]ession:
 claude\.ai/(code|chat)/
 chatgpt\.com/
+# Files a local tool wrote into its ignored state directory. The scanner also
+# matches added file names, so a force-added one fails.
+^\.abide/.

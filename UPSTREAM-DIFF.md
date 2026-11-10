@@ -373,7 +373,7 @@ Line ranges for `src/tiptap/index.ts`: options type 45-197, `stopDocSync`
   flush's result gains `"stopped"` for that. A submission whose response was
   lost is confirmed on the retry by the existing own-step matching, not stored
   twice. Unset, one failed submission ends the flush, as before.
-- **Commits:** `<SHA>` feat(tiptap): Retry the destroy-time flush.
+- **Commits:** `ad506af` feat(tiptap): Retry the destroy-time flush.
 - **Touches:** `src/tiptap/index.ts` option (line 194), `FlushRetryOptions`
   (211-225), `stopSync` (from line 419), the `onDestroy` flush call (from line
   698), `waitOrStop` (from line 1018) and `_flushPendingSteps` (1058-1135);
@@ -451,5 +451,7 @@ Fork-only tooling, guards, CI and policy. Verdict for each: fork-only.
   case. `cfdbe96` ci: Skip upstream's commits in the scan. `671fe2e` ci: Scan
   every ref in pre-push. `869cd40` ci: Keep private patterns with the private
   terms. `6b1806d` ci: Install hooks without a lifecycle script. `2c02bd6`
-  ci(sensitive): Require terms and check identities. History was rewritten
-  once, on 2026-10-25, with the maintainer's approval.
+  ci(sensitive): Require terms and check identities. `<SHA>` ci(sensitive):
+  Refuse local tool state files; `.gitignore` ignores that directory since
+  `ad506af`. History was rewritten once, on 2026-10-25, with the maintainer's
+  approval.
