@@ -16,3 +16,5 @@ react/package.json
 # npm pack output
 *.tgz
 *.tsbuildinfo
+# Local tool state
+.abide/

@@ -351,12 +351,35 @@ Line ranges for `src/tiptap/index.ts`: options type 45-197, `stopDocSync`
   relabels own steps beyond the unconfirmed steps an earlier batch's rebase
   left, so collab applies them instead of skipping them; they count as
   `beyondSavedCount`.
-- **Commits:** `<SHA>` fix(tiptap): Find own steps anywhere in catch-up.
+- **Commits:** `8fbab76` fix(tiptap): Find own steps anywhere in catch-up.
 - **Touches:** `src/tiptap/own-steps.ts`, `src/tiptap/own-steps.test.ts`,
   `src/tiptap/dropped-steps.test.ts`; `src/tiptap/index.ts`
   `applyConfirmedSteps`, `receiveSteps` and the rebase branch of
   `_flushPendingSteps`.
 - **Verdict:** yes, but only together with entry 8.
+- **Upstream PR:** none yet.
+
+### 20. Retry for the destroy-time flush
+
+- **Problem:** The destroy-time flush gives up on the first failed submission.
+  A connection that drops for a moment as the editor unmounts loses the unsent
+  steps, although the same failure in a live editor would be retried.
+- **Change:** `flushRetry: { isRetryable, deadlineMs?, initialMs?, maxMs? }`
+  sends a failed submission again when `isRetryable(error)` accepts it, with
+  the backoff of entry 11, for at most 60 seconds from the start of the flush.
+  A larger `deadlineMs` is treated as 60 seconds. Any other error, or the
+  deadline, ends the flush as before. A stop (entry 14) or terminal failure
+  (entry 15) ends a waiting retry with no further call and no report; the
+  flush's result gains `"stopped"` for that. A submission whose response was
+  lost is confirmed on the retry by the existing own-step matching, not stored
+  twice. Unset, one failed submission ends the flush, as before.
+- **Commits:** `<SHA>` feat(tiptap): Retry the destroy-time flush.
+- **Touches:** `src/tiptap/index.ts` option (line 194), `FlushRetryOptions`
+  (211-225), `stopSync` (from line 419), the `onDestroy` flush call (from line
+  698), `waitOrStop` (from line 1018) and `_flushPendingSteps` (1058-1135);
+  `src/tiptap/flush-retry.test.ts`; `README.md`.
+- **Verdict:** yes. One option, default unchanged. Depends on entries 11 and
+  14.
 - **Upstream PR:** none yet.
 
 ### Known departures from AGENTS.md

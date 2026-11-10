@@ -259,6 +259,12 @@ The flush is best-effort: if the request fails (offline, say), the steps are
 lost and `onSyncError` is called. To avoid the situation entirely, keep the
 editor mounted until `collab.sendableSteps(editor.state)` returns null.
 
+Set `flushRetry: { isRetryable }` to send a failed flush again instead. The
+flush retries the errors `isRetryable` accepts, after 1, 2, 4, 8 and 16 seconds
+and then every 30, for at most 60 seconds (`deadlineMs` shortens that). Any
+other error, or the deadline, ends it with the same `onSyncError` report.
+`stopDocSync` ends a flush that is waiting to retry, with no report.
+
 ### Creating a new document
 
 You can create a new document from the client by calling `sync.create(content)`,

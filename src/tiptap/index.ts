@@ -186,6 +186,13 @@ export type UseSyncOptions = {
    */
   flushOnDestroy?: boolean;
   /**
+   * Retry the destroy-time flush when a submission fails, instead of giving
+   * up on the first failure. Unset, one failed submission ends the flush.
+   * A stop through `stopDocSync` or a terminal sync failure ends a flush that
+   * is waiting to retry, without a data-loss report.
+   */
+  flushRetry?: FlushRetryOptions;
+  /**
    * Classify an error the sync loop raised as terminal: retrying can never
    * succeed, for example because the server refused the pending steps for
    * their size or shape. The loop calls this for every error it catches,
@@ -198,6 +205,23 @@ export type UseSyncOptions = {
    * next change. This one stops sync for good, as a schema failure does.
    */
   isTerminalSyncError?: (error: Error) => boolean;
+};
+
+/** How the destroy-time flush retries a failed submission. */
+export type FlushRetryOptions = RetryOptions & {
+  /**
+   * Whether a failed submission is worth sending again, for example a dropped
+   * connection. Return false for an error the server will repeat, such as a
+   * refusal of the steps themselves. The flush then gives up at once.
+   */
+  isRetryable: (error: unknown) => boolean;
+  /**
+   * How long after the flush starts it may still schedule a retry. Values
+   * above 60 seconds are treated as 60 seconds, because nothing shows the
+   * person that a destroyed editor is still saving.
+   * @default 60000
+   */
+  deadlineMs?: number;
 };
 
 /**
@@ -379,6 +403,8 @@ export function syncExtension(
   // Every editor that queued behind the active sync, so the retry in
   // `finally` serves all of them.
   const pendingEditors = new Set<Editor>();
+  // Destroy-time flushes that may still retry, so a stop can end them.
+  const retryingFlushes = new Set<AbortController>();
 
   function resolvePendingWithoutRetry() {
     pendingEditors.clear();
@@ -396,6 +422,10 @@ export function syncExtension(
     }
     stopReason = reason;
     retry?.cancel();
+    for (const flush of retryingFlushes) {
+      flush.abort();
+    }
+    retryingFlushes.clear();
     if (snapshotTimer) {
       clearTimeout(snapshotTimer);
       snapshotTimer = undefined;
@@ -691,8 +721,27 @@ export function syncExtension(
         opts?.flushOnDestroy !== false &&
         collab.sendableSteps(state)
       ) {
-        void _flushPendingSteps(convex, syncApi, id, state, opts?.debug).then(
+        const stop = opts?.flushRetry ? new AbortController() : undefined;
+        if (stop) {
+          retryingFlushes.add(stop);
+        }
+        const flushEnded = () => {
+          if (stop) {
+            retryingFlushes.delete(stop);
+          }
+        };
+        void _flushPendingSteps(
+          convex,
+          syncApi,
+          id,
+          state,
+          opts?.debug,
+          opts?.flushRetry && stop
+            ? { ...opts.flushRetry, signal: stop.signal }
+            : undefined,
+        ).then(
           (outcome) => {
+            flushEnded();
             if (outcome === "gave-up") {
               reportDataLoss(
                 new Error("Unsynced steps could not be flushed after destroy"),
@@ -701,7 +750,10 @@ export function syncExtension(
           },
           // The flush resolves "gave-up" for a failed submit but rejects for a
           // step that won't apply, and both mean the steps are lost.
-          reportDataLoss,
+          (error: Error) => {
+            flushEnded();
+            reportDataLoss(error);
+          },
         );
       }
     },
@@ -954,6 +1006,35 @@ const MAX_FLUSH_REBASES = 20;
 // batches. Remaining local edits may be lost when this budget runs out;
 // onDestroy reports that outcome through the existing onSyncError handler.
 const MAX_FLUSH_ROUNDS = 100;
+// The longest a flush with `flushRetry` keeps scheduling retries. A destroyed
+// editor has no interface, so an unbounded retry would save, or fail to save,
+// long after the person stopped expecting either.
+const MAX_FLUSH_RETRY_MS = 60_000;
+// The same backoff as the `retry` option of a live editor.
+const FLUSH_RETRY_INITIAL_MS = 1_000;
+const FLUSH_RETRY_MAX_MS = 30_000;
+
+/** Wait `ms`, or return "stopped" as soon as `signal` aborts. */
+function waitOrStop(
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<"waited" | "stopped"> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve("stopped");
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve("stopped");
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve("waited");
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /**
  * Submit a destroyed editor's unconfirmed local steps: the doSync send loop,
@@ -966,6 +1047,12 @@ const MAX_FLUSH_ROUNDS = 100;
  * out, and rejects if a step won't apply to the captured state. Any remaining
  * local steps are lost, and `onDestroy` reports both through `onSyncError`.
  *
+ * With `retry`, a failed submit that `retry.isRetryable` accepts is sent again
+ * after a backoff of 1, 2, 4, 8 and 16 seconds, then every 30 seconds, until
+ * the deadline. A submit that succeeds resets the backoff. Aborting
+ * `retry.signal` ends the flush with "stopped": no further call is made and
+ * nothing is reported, as for a provider that was stopped before destroy.
+ *
  * @internal Exported for tests, hence the underscore. Not a supported API.
  */
 export async function _flushPendingSteps(
@@ -974,11 +1061,17 @@ export async function _flushPendingSteps(
   id: string,
   state: EditorState,
   debug?: boolean,
-): Promise<"flushed" | "gave-up"> {
+  retry?: FlushRetryOptions & { signal?: AbortSignal },
+): Promise<"flushed" | "gave-up" | "stopped"> {
   const log: typeof console.log = debug ? console.debug : () => {};
   let rebases = 0;
   let rounds = 0;
+  let failures = 0;
+  const retryUntil =
+    Date.now() +
+    Math.min(retry?.deadlineMs ?? MAX_FLUSH_RETRY_MS, MAX_FLUSH_RETRY_MS);
   while (rebases < MAX_FLUSH_REBASES && rounds < MAX_FLUSH_ROUNDS) {
+    if (retry?.signal?.aborted) return "stopped";
     const sendable = collab.sendableSteps(state);
     if (!sendable) return "flushed";
     rounds++;
@@ -995,8 +1088,24 @@ export async function _flushPendingSteps(
       });
     } catch (error) {
       log("Flush after destroy failed", { id, error });
-      return "gave-up";
+      if (!retry) return "gave-up";
+      if (retry.signal?.aborted) return "stopped";
+      if (!retry.isRetryable(error)) return "gave-up";
+      const delay = Math.min(
+        (retry.initialMs ?? FLUSH_RETRY_INITIAL_MS) * 2 ** failures,
+        retry.maxMs ?? FLUSH_RETRY_MAX_MS,
+      );
+      if (Date.now() + delay > retryUntil) return "gave-up";
+      failures++;
+      // A failed attempt is bounded by the deadline, not by the round budget.
+      rounds--;
+      if ((await waitOrStop(delay, retry.signal)) === "stopped") {
+        return "stopped";
+      }
+      continue;
     }
+    if (retry?.signal?.aborted) return "stopped";
+    failures = 0;
     if (result.status === "synced") {
       state = state.apply(
         collab.receiveTransaction(
